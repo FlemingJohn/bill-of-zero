@@ -10,5 +10,6 @@
     "buyer": "ACME Imports LLC",
     "seller": "Shenzhen Optics Co",
     "goods": "5000x precision optical lenses"
-  }
+  },
+  "buyer_balance_usdc": 150000
 }

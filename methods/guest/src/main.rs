@@ -6,9 +6,10 @@
 // program panics, so no proof can exist for a non-compliant presentation.
 //
 // Nothing about the documents (amounts beyond the released figure, goods, exact
-// parties) is ever revealed: only the 48-byte journal leaves the zkVM.
+// parties, the buyer's balance, or which approved exporter the seller is) is ever
+// revealed: only the 48-byte journal leaves the zkVM.
 
-use bz_core::{pack_journal, terms_digest, DocumentSet, LcTerms};
+use bz_core::{merkle_root, pack_journal, terms_digest, DocumentSet, LcTerms};
 use risc0_zkvm::guest::env;
 
 fn main() {
@@ -48,6 +49,21 @@ fn main() {
     assert!(
         docs.invoice.seller_id == docs.bill_of_lading.seller_id,
         "seller differs between invoice and bill of lading"
+    );
+
+    // Rule 6 (range proof): the buyer's escrow balance must cover the full LC
+    // credit line. The exact balance stays private — we only prove the bound.
+    assert!(
+        docs.buyer_balance >= terms.credit_limit,
+        "buyer balance does not cover the LC credit line"
+    );
+
+    // Rule 7 (Merkle membership): the seller must be on the bank's approved
+    // exporter allowlist. We prove the seller_id hashes up to the LC's
+    // approved_root without revealing which leaf it is.
+    assert!(
+        merkle_root(&docs.invoice.seller_id, &docs.seller_merkle) == terms.approved_root,
+        "seller is not in the approved-exporter allowlist"
     );
 
     // All checks passed. Bind the proof to THESE LC terms and reveal only the

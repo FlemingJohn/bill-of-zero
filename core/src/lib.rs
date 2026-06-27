@@ -9,6 +9,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Depth of the approved-seller Merkle tree (2^DEPTH leaves). Depth 4 = up to
+/// 16 approved exporters, which is plenty for the demo.
+pub const TREE_DEPTH: usize = 4;
+
 /// Public Letter-of-Credit terms. These are known to the escrow contract
 /// (the LC is what the escrow was funded against). They are passed to the
 /// guest as input and bound into the journal via `terms_digest`.
@@ -23,6 +27,10 @@ pub struct LcTerms {
     pub buyer_id: [u8; 32],
     /// sha256(seller legal name).
     pub seller_id: [u8; 32],
+    /// Feature 1 (Merkle membership): root of the bank's approved-exporter
+    /// allowlist. The seller must prove membership without revealing which
+    /// approved exporter it is.
+    pub approved_root: [u8; 32],
 }
 
 /// Private commercial invoice. Never leaves the off-chain prover.
@@ -41,11 +49,26 @@ pub struct BillOfLading {
     pub seller_id: [u8; 32],
 }
 
+/// A Merkle inclusion proof: the sibling hashes along the path from a leaf to
+/// the root, plus the position bits (bit i: 0 => node is the left child at
+/// level i, 1 => right child).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MerkleProof {
+    pub siblings: [[u8; 32]; TREE_DEPTH],
+    pub index_bits: u32,
+}
+
 /// The full private document set presented for an LC drawdown.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentSet {
     pub invoice: Invoice,
     pub bill_of_lading: BillOfLading,
+    /// Feature 3 (range proof): the buyer's available escrow balance. The guest
+    /// proves this covers the LC credit line WITHOUT revealing the exact figure.
+    pub buyer_balance: u64,
+    /// Feature 1 (Merkle membership): proof that `invoice.seller_id` is a leaf
+    /// of the LC's `approved_root` tree.
+    pub seller_merkle: MerkleProof,
 }
 
 /// Length of the journal the guest commits.
@@ -62,6 +85,33 @@ pub fn id_from_name(name: &str) -> [u8; 32] {
     Sha256::digest(name.as_bytes()).into()
 }
 
+/// Hash two 32-byte nodes into their parent. Used to walk a Merkle path.
+pub fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(left);
+    h.update(right);
+    h.finalize().into()
+}
+
+/// Recompute the Merkle root implied by `leaf` and `proof`. The guest compares
+/// this against the LC's `approved_root` to prove membership.
+pub fn merkle_root(leaf: &[u8; 32], proof: &MerkleProof) -> [u8; 32] {
+    let mut cur = *leaf;
+    let mut idx = proof.index_bits;
+    let mut i = 0;
+    while i < TREE_DEPTH {
+        let sib = &proof.siblings[i];
+        cur = if idx & 1 == 0 {
+            hash_pair(&cur, sib)
+        } else {
+            hash_pair(sib, &cur)
+        };
+        idx >>= 1;
+        i += 1;
+    }
+    cur
+}
+
 /// Canonical digest of the LC terms. Computed identically in the guest and by
 /// the deployer (via the host), so the escrow can prove the proof was checked
 /// against the *correct* LC terms and not attacker-chosen lenient ones.
@@ -72,6 +122,7 @@ pub fn terms_digest(t: &LcTerms) -> [u8; 32] {
     h.update(t.deadline.to_le_bytes());
     h.update(t.buyer_id);
     h.update(t.seller_id);
+    h.update(t.approved_root);
     h.finalize().into()
 }
 
