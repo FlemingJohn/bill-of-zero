@@ -1,0 +1,14 @@
+{
+  "invoice": {
+    "amount_usdc": 95000,
+    "buyer": "ACME Imports LLC",
+    "seller": "Shenzhen Optics Co",
+    "currency": "USDC"
+  },
+  "bill_of_lading": {
+    "ship_date_unix": 1735603200,
+    "buyer": "ACME Imports LLC",
+    "seller": "Shenzhen Optics Co",
+    "goods": "5000x precision optical lenses"
+  }
+}

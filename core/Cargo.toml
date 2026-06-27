@@ -1,0 +1,10 @@
+[package]
+name = "bz-core"
+version = "0.1.0"
+edition = "2021"
+
+# Shared types used by BOTH the zkVM guest (riscv32im, no_std) and the host (std).
+# Kept dependency-light and no_std so it compiles cleanly inside the guest.
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+sha2 = { version = "0.10", default-features = false }

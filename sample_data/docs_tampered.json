@@ -1,0 +1,15 @@
+{
+  "_note": "Invoice amount 250000 exceeds the LC credit_limit of 100000. The guest will panic -> no proof can be produced -> escrow never releases.",
+  "invoice": {
+    "amount_usdc": 250000,
+    "buyer": "ACME Imports LLC",
+    "seller": "Shenzhen Optics Co",
+    "currency": "USDC"
+  },
+  "bill_of_lading": {
+    "ship_date_unix": 1735603200,
+    "buyer": "ACME Imports LLC",
+    "seller": "Shenzhen Optics Co",
+    "goods": "5000x precision optical lenses"
+  }
+}
