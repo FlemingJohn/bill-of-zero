@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 risc0-zkvm = { version = "^3.0.5", default-features = false, features = ['std'] }
 bz-core = { path = "../../core" }
+# Feature 4: verify the issuer's ed25519 signature on the documents inside the
+# zkVM. Verification only (no signing, no rng) so default features are off.
+ed25519-dalek = { version = "2", default-features = false }

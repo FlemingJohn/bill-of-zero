@@ -9,7 +9,8 @@
 // parties, the buyer's balance, or which approved exporter the seller is) is ever
 // revealed: only the 48-byte journal leaves the zkVM.
 
-use bz_core::{merkle_root, pack_journal, terms_digest, DocumentSet, LcTerms};
+use bz_core::{doc_digest, merkle_root, pack_journal, terms_digest, DocumentSet, LcTerms};
+use ed25519_dalek::{Signature, VerifyingKey};
 use risc0_zkvm::guest::env;
 
 fn main() {
@@ -65,6 +66,18 @@ fn main() {
         merkle_root(&docs.invoice.seller_id, &docs.seller_merkle) == terms.approved_root,
         "seller is not in the approved-exporter allowlist"
     );
+
+    // Rule 8 (issuer signature): the documents must be signed by the LC's
+    // trusted issuer. We verify the ed25519 signature over doc_digest INSIDE the
+    // zkVM, so the proof attests the documents are authentic, not just well-formed.
+    let vk = VerifyingKey::from_bytes(&terms.issuer_pubkey).expect("malformed issuer public key");
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes[..32].copy_from_slice(&docs.issuer_sig[0]);
+    sig_bytes[32..].copy_from_slice(&docs.issuer_sig[1]);
+    let sig = Signature::from_bytes(&sig_bytes);
+    let msg = doc_digest(&docs.invoice, &docs.bill_of_lading);
+    vk.verify_strict(&msg, &sig)
+        .expect("issuer signature on documents is invalid");
 
     // All checks passed. Bind the proof to THESE LC terms and reveal only the
     // LC id and the amount to release.

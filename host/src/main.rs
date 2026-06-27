@@ -17,9 +17,10 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use bz_core::{
-    hash_pair, id_from_name, merkle_root, terms_digest, BillOfLading, DocumentSet, Invoice,
-    LcTerms, MerkleProof, TREE_DEPTH,
+    doc_digest, hash_pair, id_from_name, merkle_root, terms_digest, BillOfLading, DocumentSet,
+    Invoice, LcTerms, MerkleProof, TREE_DEPTH,
 };
+use ed25519_dalek::{Signer, SigningKey};
 use methods::{LC_CHECK_ELF, LC_CHECK_ID};
 use risc0_ethereum_contracts::encode_seal;
 use risc0_zkvm::sha::Digest;
@@ -137,6 +138,28 @@ fn main() -> Result<()> {
         bail!("internal error: constructed Merkle proof does not match root");
     }
 
+    let invoice = Invoice {
+        amount: d.invoice.amount_usdc,
+        buyer_id: id_from_name(&d.invoice.buyer),
+        seller_id: id_from_name(&d.invoice.seller),
+    };
+    let bill_of_lading = BillOfLading {
+        ship_date: d.bill_of_lading.ship_date_unix,
+        buyer_id: id_from_name(&d.bill_of_lading.buyer),
+        seller_id: id_from_name(&d.bill_of_lading.seller),
+    };
+
+    // --- Feature 4: the issuer signs the documents ------------------------
+    // TEST ONLY: a deterministic issuer key derived from a fixed seed so the
+    // demo is reproducible. In production this key belongs to the carrier /
+    // issuing bank and the signature would arrive with the real documents.
+    let issuer = SigningKey::from_bytes(&[7u8; 32]);
+    let issuer_pubkey = issuer.verifying_key().to_bytes();
+    let sig = issuer.sign(&doc_digest(&invoice, &bill_of_lading)).to_bytes();
+    let mut issuer_sig = [[0u8; 32]; 2];
+    issuer_sig[0].copy_from_slice(&sig[..32]);
+    issuer_sig[1].copy_from_slice(&sig[32..]);
+
     let terms = LcTerms {
         lc_id: t.lc_id,
         credit_limit: t.credit_limit_usdc,
@@ -144,20 +167,14 @@ fn main() -> Result<()> {
         buyer_id: id_from_name(&t.buyer),
         seller_id,
         approved_root,
+        issuer_pubkey,
     };
     let docs = DocumentSet {
-        invoice: Invoice {
-            amount: d.invoice.amount_usdc,
-            buyer_id: id_from_name(&d.invoice.buyer),
-            seller_id: id_from_name(&d.invoice.seller),
-        },
-        bill_of_lading: BillOfLading {
-            ship_date: d.bill_of_lading.ship_date_unix,
-            buyer_id: id_from_name(&d.bill_of_lading.buyer),
-            seller_id: id_from_name(&d.bill_of_lading.seller),
-        },
+        invoice,
+        bill_of_lading,
         buyer_balance: d.buyer_balance_usdc,
         seller_merkle,
+        issuer_sig,
     };
 
     // --- Prove -------------------------------------------------------------

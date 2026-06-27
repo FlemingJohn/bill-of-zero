@@ -16,3 +16,5 @@ sha2 = "0.10"
 hex = "0.4"
 anyhow = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Feature 4: sign the documents with the issuer key so the guest can verify.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }

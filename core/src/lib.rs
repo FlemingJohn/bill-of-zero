@@ -31,6 +31,10 @@ pub struct LcTerms {
     /// allowlist. The seller must prove membership without revealing which
     /// approved exporter it is.
     pub approved_root: [u8; 32],
+    /// Feature 4 (issuer signature): the ed25519 public key of the trusted
+    /// document issuer (e.g. the carrier / issuing bank). The guest proves the
+    /// presented documents carry this issuer's signature.
+    pub issuer_pubkey: [u8; 32],
 }
 
 /// Private commercial invoice. Never leaves the off-chain prover.
@@ -69,6 +73,10 @@ pub struct DocumentSet {
     /// Feature 1 (Merkle membership): proof that `invoice.seller_id` is a leaf
     /// of the LC's `approved_root` tree.
     pub seller_merkle: MerkleProof,
+    /// Feature 4 (issuer signature): the issuer's ed25519 signature over
+    /// `doc_digest(invoice, bill_of_lading)`. Stored as two 32-byte halves
+    /// because serde only derives arrays up to length 32.
+    pub issuer_sig: [[u8; 32]; 2],
 }
 
 /// Length of the journal the guest commits.
@@ -112,6 +120,20 @@ pub fn merkle_root(leaf: &[u8; 32], proof: &MerkleProof) -> [u8; 32] {
     cur
 }
 
+/// Canonical digest of the trade documents. This is the message the issuer
+/// signs (feature 4) and that the guest verifies the signature against. Covers
+/// every field the LC rules care about, so the signature pins the exact docs.
+pub fn doc_digest(inv: &Invoice, bol: &BillOfLading) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(inv.amount.to_le_bytes());
+    h.update(inv.buyer_id);
+    h.update(inv.seller_id);
+    h.update(bol.ship_date.to_le_bytes());
+    h.update(bol.buyer_id);
+    h.update(bol.seller_id);
+    h.finalize().into()
+}
+
 /// Canonical digest of the LC terms. Computed identically in the guest and by
 /// the deployer (via the host), so the escrow can prove the proof was checked
 /// against the *correct* LC terms and not attacker-chosen lenient ones.
@@ -123,6 +145,7 @@ pub fn terms_digest(t: &LcTerms) -> [u8; 32] {
     h.update(t.buyer_id);
     h.update(t.seller_id);
     h.update(t.approved_root);
+    h.update(t.issuer_pubkey);
     h.finalize().into()
 }
 
