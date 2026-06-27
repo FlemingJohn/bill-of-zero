@@ -35,6 +35,11 @@ pub struct LcTerms {
     /// document issuer (e.g. the carrier / issuing bank). The guest proves the
     /// presented documents carry this issuer's signature.
     pub issuer_pubkey: [u8; 32],
+    /// Feature 5 (selective disclosure): the auditor's X25519 public key. The
+    /// documents are encrypted to this key off-chain; the guest commits a
+    /// blinded digest of them on-chain so the auditor's later disclosure is
+    /// provably the same document set that was settled.
+    pub auditor_pubkey: [u8; 32],
 }
 
 /// Private commercial invoice. Never leaves the off-chain prover.
@@ -77,16 +82,29 @@ pub struct DocumentSet {
     /// `doc_digest(invoice, bill_of_lading)`. Stored as two 32-byte halves
     /// because serde only derives arrays up to length 32.
     pub issuer_sig: [[u8; 32]; 2],
+    /// Feature 5 (selective disclosure): random blinding so the on-chain
+    /// `disclosure_commitment` cannot be brute-forced from guessable document
+    /// fields. Shared with the auditor as part of the encrypted preimage.
+    pub disclosure_blinding: [u8; 32],
 }
 
 /// Length of the journal the guest commits.
 ///
-/// Fixed 48-byte layout so the Soroban escrow can parse it with plain slicing
+/// Fixed 80-byte layout so the Soroban escrow can parse it with plain slicing
 /// (no risc0 serde on-chain):
-///   [0..8]   lc_id          (little-endian u64)
-///   [8..16]  release_amount (little-endian u64)
-///   [16..48] terms_digest   (sha256 of the canonical LcTerms)
-pub const JOURNAL_LEN: usize = 48;
+///   [0..8]   lc_id                 (little-endian u64)
+///   [8..16]  release_amount        (little-endian u64)
+///   [16..48] terms_digest          (sha256 of the canonical LcTerms)
+///   [48..80] disclosure_commitment (blinded sha256 of the documents)
+pub const JOURNAL_LEN: usize = 80;
+
+/// Number of bytes in the auditor disclosure preimage (the plaintext that gets
+/// encrypted to the auditor and hashed into the on-chain commitment).
+///   invoice  : amount(8) + buyer(32) + seller(32)            = 72
+///   bol      : ship_date(8) + buyer(32) + seller(32)         = 72
+///   balance  : 8
+///   blinding : 32
+pub const DISCLOSURE_PREIMAGE_LEN: usize = 72 + 72 + 8 + 32;
 
 /// Derive a 32-byte party id from a human-readable legal name.
 pub fn id_from_name(name: &str) -> [u8; 32] {
@@ -134,6 +152,35 @@ pub fn doc_digest(inv: &Invoice, bol: &BillOfLading) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Build the canonical auditor-disclosure preimage: the exact bytes the host
+/// encrypts to the auditor and the guest hashes into the on-chain commitment.
+/// Sharing this one function guarantees the auditor's decrypted plaintext and
+/// the proven commitment are computed over identical bytes.
+pub fn disclosure_preimage(docs: &DocumentSet) -> [u8; DISCLOSURE_PREIMAGE_LEN] {
+    let mut out = [0u8; DISCLOSURE_PREIMAGE_LEN];
+    let mut o = 0;
+    let mut put = |bytes: &[u8], o: &mut usize| {
+        out[*o..*o + bytes.len()].copy_from_slice(bytes);
+        *o += bytes.len();
+    };
+    put(&docs.invoice.amount.to_le_bytes(), &mut o);
+    put(&docs.invoice.buyer_id, &mut o);
+    put(&docs.invoice.seller_id, &mut o);
+    put(&docs.bill_of_lading.ship_date.to_le_bytes(), &mut o);
+    put(&docs.bill_of_lading.buyer_id, &mut o);
+    put(&docs.bill_of_lading.seller_id, &mut o);
+    put(&docs.buyer_balance.to_le_bytes(), &mut o);
+    put(&docs.disclosure_blinding, &mut o);
+    out
+}
+
+/// Blinded commitment to the documents for selective disclosure (feature 5).
+/// Committed in the journal so the auditor's later disclosure is provably the
+/// same document set that settled, while leaking nothing on-chain.
+pub fn disclosure_commitment(docs: &DocumentSet) -> [u8; 32] {
+    Sha256::digest(disclosure_preimage(docs)).into()
+}
+
 /// Canonical digest of the LC terms. Computed identically in the guest and by
 /// the deployer (via the host), so the escrow can prove the proof was checked
 /// against the *correct* LC terms and not attacker-chosen lenient ones.
@@ -146,14 +193,21 @@ pub fn terms_digest(t: &LcTerms) -> [u8; 32] {
     h.update(t.seller_id);
     h.update(t.approved_root);
     h.update(t.issuer_pubkey);
+    h.update(t.auditor_pubkey);
     h.finalize().into()
 }
 
-/// Pack the public journal into its fixed 48-byte on-chain layout.
-pub fn pack_journal(lc_id: u64, release_amount: u64, terms_digest: &[u8; 32]) -> [u8; JOURNAL_LEN] {
+/// Pack the public journal into its fixed 80-byte on-chain layout.
+pub fn pack_journal(
+    lc_id: u64,
+    release_amount: u64,
+    terms_digest: &[u8; 32],
+    disclosure_commitment: &[u8; 32],
+) -> [u8; JOURNAL_LEN] {
     let mut out = [0u8; JOURNAL_LEN];
     out[0..8].copy_from_slice(&lc_id.to_le_bytes());
     out[8..16].copy_from_slice(&release_amount.to_le_bytes());
     out[16..48].copy_from_slice(terms_digest);
+    out[48..80].copy_from_slice(disclosure_commitment);
     out
 }

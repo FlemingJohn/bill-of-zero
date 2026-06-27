@@ -18,3 +18,6 @@ anyhow = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Feature 4: sign the documents with the issuer key so the guest can verify.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# Feature 5: encrypt the document disclosure to the auditor's X25519 key.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"

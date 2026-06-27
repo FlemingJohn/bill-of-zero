@@ -17,9 +17,11 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use bz_core::{
-    doc_digest, hash_pair, id_from_name, merkle_root, terms_digest, BillOfLading, DocumentSet,
-    Invoice, LcTerms, MerkleProof, TREE_DEPTH,
+    disclosure_commitment, disclosure_preimage, doc_digest, hash_pair, id_from_name, merkle_root,
+    terms_digest, BillOfLading, DocumentSet, Invoice, LcTerms, MerkleProof, TREE_DEPTH,
 };
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use ed25519_dalek::{Signer, SigningKey};
 use methods::{LC_CHECK_ELF, LC_CHECK_ID};
 use risc0_ethereum_contracts::encode_seal;
@@ -27,6 +29,88 @@ use risc0_zkvm::sha::Digest;
 use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+use x25519_dalek::{PublicKey, StaticSecret};
+
+// --- Feature 5: selective-disclosure key material (TEST ONLY) -------------
+// Deterministic keys so the demo is reproducible. In production the auditor
+// owns AUDITOR_SK, the host samples a fresh ephemeral key, and the blinding is
+// random per presentation.
+const AUDITOR_SK: [u8; 32] = [5u8; 32];
+const EPHEMERAL_SK: [u8; 32] = [9u8; 32];
+const DISCLOSURE_BLINDING: [u8; 32] = [0x42u8; 32];
+
+fn auditor_pubkey() -> [u8; 32] {
+    PublicKey::from(&StaticSecret::from(AUDITOR_SK)).to_bytes()
+}
+
+/// Derive the ChaCha20-Poly1305 key + nonce from the ECDH shared secret. Both
+/// the host and the auditor derive these identically.
+fn derive_key_nonce(shared: &[u8], eph_pub: &[u8; 32]) -> ([u8; 32], [u8; 12]) {
+    let key: [u8; 32] = Sha256::digest(shared).into();
+    let mut hn = Sha256::new();
+    hn.update(b"bz-nonce");
+    hn.update(eph_pub);
+    let nh: [u8; 32] = hn.finalize().into();
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&nh[..12]);
+    (key, nonce)
+}
+
+/// ECIES-style: encrypt `plaintext` to the auditor's X25519 public key.
+/// Blob layout: ephemeral_pubkey(32) || ciphertext(+16 byte tag).
+fn encrypt_to_auditor(auditor_pub: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
+    let eph = StaticSecret::from(EPHEMERAL_SK);
+    let eph_pub = PublicKey::from(&eph);
+    let shared = eph.diffie_hellman(&PublicKey::from(*auditor_pub));
+    let (key, nonce) = derive_key_nonce(shared.as_bytes(), eph_pub.as_bytes());
+    let ct = ChaCha20Poly1305::new(Key::from_slice(&key))
+        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .expect("auditor encryption failed");
+    let mut blob = Vec::with_capacity(32 + ct.len());
+    blob.extend_from_slice(eph_pub.as_bytes());
+    blob.extend_from_slice(&ct);
+    blob
+}
+
+/// The auditor decrypts a disclosure blob with their private key.
+fn decrypt_as_auditor(blob: &[u8]) -> Result<Vec<u8>> {
+    if blob.len() < 32 {
+        bail!("disclosure blob too short");
+    }
+    let eph_pub: [u8; 32] = blob[..32].try_into().unwrap();
+    let auditor = StaticSecret::from(AUDITOR_SK);
+    let shared = auditor.diffie_hellman(&PublicKey::from(eph_pub));
+    let (key, nonce) = derive_key_nonce(shared.as_bytes(), &eph_pub);
+    ChaCha20Poly1305::new(Key::from_slice(&key))
+        .decrypt(Nonce::from_slice(&nonce), &blob[32..])
+        .map_err(|_| anyhow::anyhow!("disclosure decryption/authentication failed"))
+}
+
+/// `host audit <disclosure.bin>` — decrypt and recompute the commitment so the
+/// auditor can match it against the escrow's on-chain `disclosure()` value.
+fn run_audit(path: &str) -> Result<()> {
+    let blob = std::fs::read(path).with_context(|| format!("reading {path}"))?;
+    let pt = decrypt_as_auditor(&blob)?;
+    if pt.len() != bz_core::DISCLOSURE_PREIMAGE_LEN {
+        bail!("unexpected disclosure length: {}", pt.len());
+    }
+    let amount = u64::from_le_bytes(pt[0..8].try_into().unwrap());
+    let ship_date = u64::from_le_bytes(pt[72..80].try_into().unwrap());
+    let balance = u64::from_le_bytes(pt[144..152].try_into().unwrap());
+    let commitment = Sha256::digest(&pt);
+
+    println!("=== Bill of Zero — auditor disclosure ===");
+    println!("invoice amount        : {amount}");
+    println!("buyer escrow balance  : {balance}");
+    println!("shipment date (unix)  : {ship_date}");
+    println!("invoice buyer_id      : {}", hex::encode(&pt[8..40]));
+    println!("invoice seller_id     : {}", hex::encode(&pt[40..72]));
+    println!(
+        "disclosure_commitment : {}  (must equal escrow.disclosure())",
+        hex::encode(commitment)
+    );
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct LcTermsJson {
@@ -98,8 +182,17 @@ fn main() -> Result<()> {
         .init();
 
     let mut args = std::env::args().skip(1);
-    let terms_path =
-        PathBuf::from(args.next().unwrap_or_else(|| "sample_data/lc_terms.json".into()));
+
+    // Subcommand: `host audit <disclosure.bin>` runs the auditor view-key path.
+    let first = args.next();
+    if first.as_deref() == Some("audit") {
+        let path = args
+            .next()
+            .unwrap_or_else(|| "sample_data/disclosure.bin".into());
+        return run_audit(&path);
+    }
+
+    let terms_path = PathBuf::from(first.unwrap_or_else(|| "sample_data/lc_terms.json".into()));
     let docs_path =
         PathBuf::from(args.next().unwrap_or_else(|| "sample_data/docs_valid.json".into()));
     let approved_path = PathBuf::from(
@@ -168,6 +261,7 @@ fn main() -> Result<()> {
         seller_id,
         approved_root,
         issuer_pubkey,
+        auditor_pubkey: auditor_pubkey(),
     };
     let docs = DocumentSet {
         invoice,
@@ -175,7 +269,16 @@ fn main() -> Result<()> {
         buyer_balance: d.buyer_balance_usdc,
         seller_merkle,
         issuer_sig,
+        disclosure_blinding: DISCLOSURE_BLINDING,
     };
+
+    // --- Feature 5: encrypt the disclosure to the auditor (off-chain) ------
+    // The guest commits disclosure_commitment(docs) into the journal; here we
+    // encrypt the matching preimage so the auditor can later open it and prove
+    // it equals what settled on-chain.
+    let blob = encrypt_to_auditor(&terms.auditor_pubkey, &disclosure_preimage(&docs));
+    std::fs::write("sample_data/disclosure.bin", &blob)
+        .context("writing sample_data/disclosure.bin")?;
 
     // --- Prove -------------------------------------------------------------
     eprintln!("Proving LC compliance for lc_id={} ...", terms.lc_id);
@@ -199,13 +302,20 @@ fn main() -> Result<()> {
     let image_id = Digest::from(LC_CHECK_ID);
     let td = terms_digest(&terms);
 
+    let dc = disclosure_commitment(&docs);
+
     println!("\n=== Bill of Zero — proof generated ===");
     println!("lc_id          : {}", terms.lc_id);
     println!("approved_root  : {}", hex::encode(approved_root));
+    println!("issuer_pubkey  : {}", hex::encode(terms.issuer_pubkey));
+    println!("auditor_pubkey : {}", hex::encode(terms.auditor_pubkey));
     println!("image_id       : {}", hex::encode(image_id.as_bytes()));
     println!("terms_digest   : {}", hex::encode(td));
+    println!("disclosure_cmt : {}", hex::encode(dc));
     println!("journal        : {}", hex::encode(&journal));
     println!("journal_digest : {}", hex::encode(journal_digest));
     println!("seal           : {}", hex::encode(&seal));
+    println!("\nAuditor disclosure written to sample_data/disclosure.bin");
+    println!("Open it with:  cargo run --bin host -- audit sample_data/disclosure.bin");
     Ok(())
 }

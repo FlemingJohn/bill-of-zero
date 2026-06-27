@@ -9,7 +9,10 @@
 // parties, the buyer's balance, or which approved exporter the seller is) is ever
 // revealed: only the 48-byte journal leaves the zkVM.
 
-use bz_core::{doc_digest, merkle_root, pack_journal, terms_digest, DocumentSet, LcTerms};
+use bz_core::{
+    disclosure_commitment, doc_digest, merkle_root, pack_journal, terms_digest, DocumentSet,
+    LcTerms,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use risc0_zkvm::guest::env;
 
@@ -79,9 +82,11 @@ fn main() {
     vk.verify_strict(&msg, &sig)
         .expect("issuer signature on documents is invalid");
 
-    // All checks passed. Bind the proof to THESE LC terms and reveal only the
+    // All checks passed. Bind the proof to THESE LC terms, commit a blinded
+    // disclosure commitment for the auditor (feature 5), and reveal only the
     // LC id and the amount to release.
     let td = terms_digest(&terms);
-    let journal = pack_journal(terms.lc_id, docs.invoice.amount, &td);
+    let dc = disclosure_commitment(&docs);
+    let journal = pack_journal(terms.lc_id, docs.invoice.amount, &td, &dc);
     env::commit_slice(&journal);
 }
