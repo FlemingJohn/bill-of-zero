@@ -66,7 +66,8 @@ app.post("/api/prove", async (req, res) => {
     path.join(SAMPLE, which),
     path.join(SAMPLE, "approved_sellers.json"),
   ];
-  const { code, stdout, stderr } = await run("cargo", args, { timeout: 300000 });
+  // Real Groth16 proving (zkVM + Docker STARK->SNARK) can take several minutes.
+  const { code, stdout, stderr } = await run("cargo", args, { timeout: 600000 });
   const combined = stdout + "\n" + stderr;
 
   // Tampered docs: the guest panics on purpose -> no proof. Report it as a

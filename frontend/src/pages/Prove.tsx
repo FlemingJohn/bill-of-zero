@@ -68,7 +68,7 @@ export default function Prove() {
             className="w-full py-4 bg-gradient-to-r from-[#BDF589] to-[#636EB4] text-black font-mono font-bold tracking-wider uppercase rounded-xl hover:opacity-90 disabled:opacity-50 flex items-center justify-center space-x-2"
           >
             {busy ? (
-              <><RefreshCw className="w-4 h-4 animate-spin text-black" /><span>Proving in zkVM… (~30s–2min)</span></>
+              <><RefreshCw className="w-4 h-4 animate-spin text-black" /><span>Proving in zkVM… (a few minutes)</span></>
             ) : (
               <><Key className="w-4 h-4 text-black" /><span>Generate Groth16 Proof</span></>
             )}
