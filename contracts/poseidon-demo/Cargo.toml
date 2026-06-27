@@ -1,0 +1,31 @@
+[package]
+name = "poseidon-demo"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace: this contract is intentionally NOT part of the escrow
+# workspace. It needs soroban-sdk 27 (for the native Poseidon host function),
+# while the escrow stays on soroban-sdk 25 to remain compatible with the
+# Nethermind RISC Zero verifier client (which pins soroban-sdk 25).
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `hazmat-crypto` exposes env.crypto_hazmat().poseidon_permutation(...), the
+# native Protocol 25 (CAP-0075) Poseidon host function.
+soroban-sdk = { version = "=27.0.0-rc.1", features = ["hazmat-crypto"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "=27.0.0-rc.1", features = ["hazmat-crypto", "testutils"] }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
