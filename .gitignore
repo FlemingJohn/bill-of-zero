@@ -3,3 +3,6 @@ target/
 *.bin
 frontend/node_modules/
 frontend/dist/
+
+# TUI scratch
+sample_data/.tui_docs.json
