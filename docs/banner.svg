@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="190" viewBox="0 0 760 190" role="img" aria-label="Bill of Zero">
+  <rect width="760" height="190" rx="10" fill="#0F0F0F"/>
+  <g font-family="'SF Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="17" font-weight="bold" fill="#BDF589" xml:space="preserve">
+    <text x="28" y="44"> ____   ___  _      _          ___   _____     _____  _____  ____    ___  </text>
+    <text x="28" y="66">| __ ) |_ _|| |    | |        / _ \ |  ___|   |__  / | ____||  _ \  / _ \ </text>
+    <text x="28" y="88">|  _ \  | | | |    | |       | | | || |_        / /  |  _|  | |_) || | | |</text>
+    <text x="28" y="110">| |_) | | | | |___ | |___    | |_| ||  _|      / /_  | |___ |  _ &lt; | |_| |</text>
+    <text x="28" y="132">|____/ |___||_____||_____|    \___/ |_|       /____| |_____||_| \_\ \___/ </text>
+  </g>
+  <text x="380" y="166" text-anchor="middle" font-family="'SF Mono','DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="15" fill="#8C8C8C">Zero-knowledge Letter-of-Credit settlement on Stellar</text>
+</svg>

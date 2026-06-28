@@ -1,8 +1,28 @@
-# Bill of Zero
+<p align="center">
+  <img src="docs/banner.svg" alt="Bill of Zero" width="760">
+</p>
 
-Privacy-preserving Letter-of-Credit settlement on Stellar, powered by zero-knowledge proofs.
+<p align="center"><b>Privacy-preserving Letter-of-Credit settlement on Stellar, powered by zero-knowledge proofs.</b></p>
 
 Bill of Zero lets a buyer's bank escrow a stablecoin payment for a Letter of Credit (LC) and release it to the seller the moment a compliant set of trade documents is presented, without ever revealing those documents on-chain. A RISC Zero zero-knowledge proof attests that a private invoice and bill of lading satisfy the LC's terms, that the documents are signed by a trusted issuer, that the seller is an approved exporter, and that the buyer is good for the credit line. A Soroban smart contract verifies that proof on Stellar and releases the funds. An auditor can later open a sealed disclosure and prove it matches exactly what settled.
+
+---
+
+## Demo
+
+Bill of Zero ships as a keyboard-driven terminal UI (ratatui). Three roles share one on-chain escrow: the **Buyer** funds it and reclaims any remainder, the **Seller** types the private trade documents, generates a real Groth16 proof and releases, and the **Auditor** selectively opens the sealed disclosure and verifies it matches what settled.
+
+**Buyer — fund the escrow, refund the remainder**
+
+![Buyer tab](docs/buyer.png)
+
+**Seller — enter the documents, prove compliance, release**
+
+![Seller tab](docs/seller.png)
+
+**Auditor — selective disclosure with on-chain commitment match**
+
+![Auditor tab](docs/auditor.png)
 
 ---
 
@@ -19,11 +39,11 @@ Bill of Zero resolves the tension. The document check runs off-chain inside a ze
 ### What the chain never sees
 
 - The documents themselves
-- The goods description
-- The exact shipment date
+- The exact shipment date, quantity, unit price, and currency detail
 - The invoiced amount beyond the released figure
 - The buyer's available balance (only that it covers the credit line)
 - Which approved exporter the seller is
+- The goods' country of origin (only that it is on the allowed list)
 
 What is necessarily public: the LC id and the released amount, since funds move on a public ledger.
 
@@ -31,15 +51,19 @@ What is necessarily public: the LC id and the released amount, since funds move 
 
 The escrow releases funds only if a Groth16 proof verifies on-chain. The proof attests, in zero knowledge, that all of the LC rules below hold. If any rule fails, the guest program panics and no proof can be produced, so non-compliant documents can never unlock the escrow. The proof is bound to the specific LC through a terms digest committed inside the journal and pinned in the escrow, and to the specific compliance program through the RISC Zero image id. Remove the zero-knowledge layer and there is no way to release funds while keeping documents private. It is not decorative.
 
-### The eight compliance rules (all proven in zero knowledge)
+### The compliance rules (all proven in zero knowledge)
 
 1. Invoice amount is less than or equal to the LC credit limit.
-2. Shipment date is on or before the LC deadline.
-3. and 4. Both documents name the LC's buyer and the LC's seller.
-5. The invoice and the bill of lading are mutually consistent.
-6. Range proof: the buyer's escrow balance covers the LC credit line, without revealing the exact balance.
+2. Invoice amount equals quantity × unit price (line-item integrity).
+3. Invoice currency matches the LC currency.
+4. Shipment date is on or before the LC deadline.
+5. Both the invoice and the bill of lading name the LC's buyer and seller, and are mutually consistent.
+6. Range proof: the buyer's balance covers the LC credit line, without revealing the exact balance.
 7. Merkle membership: the seller is on the bank's approved-exporter allowlist, without revealing which entry.
-8. Issuer signature: the documents carry a valid ed25519 signature from the LC's trusted issuer, verified inside the zkVM.
+8. Merkle membership: the goods' country of origin is on the LC's allowed-origin list, without revealing which.
+9. Issuer signature: the documents carry a valid ed25519 signature from the LC's trusted issuer, verified inside the zkVM.
+
+The bill-of-lading number and carrier are carried as disclosed-only fields (signed and auditable, not gated).
 
 ---
 
@@ -52,7 +76,7 @@ flowchart LR
         TERMS["LC terms + roots + issuer key + auditor key<br/>(public commitments)"]
         DOCS["Invoice + Bill of Lading + balance<br/>+ issuer signature + Merkle proof<br/>(private)"]
         HOST["Host / Prover"]
-        GUEST["RISC Zero zkVM<br/>8-rule LC-compliance guest"]
+        GUEST["RISC Zero zkVM<br/>LC-compliance guest"]
         AUD["Encrypt disclosure<br/>to auditor (X25519)"]
         TERMS --> HOST
         DOCS --> HOST
@@ -89,8 +113,8 @@ flowchart LR
 flowchart TD
     A["1. Buyer's bank funds the escrow for LC 1001<br/>(stores terms_digest, image_id, router, seller)"]
     B["2. Seller presents the private documents + issuer signature + Merkle proof to the host"]
-    C["3. zkVM runs the 8-rule LC-compliance guest over the documents"]
-    D{"All 8 LC rules pass?"}
+    C["3. zkVM runs the LC-compliance guest over the documents"]
+    D{"All LC rules pass?"}
     E["Guest panics. No proof exists. Escrow stays locked."]
     F["4. Host produces a Groth16 proof and the 80-byte journal,<br/>and encrypts the disclosure to the auditor"]
     G["5. release(seal, journal) is called on the escrow"]
@@ -113,12 +137,13 @@ flowchart TD
 
 | Layer | Technology |
 | --- | --- |
+| Demo UI | Terminal UI in Rust (ratatui + crossterm); orchestrates the prover and the Stellar CLI |
 | Zero-knowledge proving | RISC Zero zkVM 3.0.5 (STARK proof, wrapped to Groth16 over BN254) |
-| In-guest crypto | ed25519-dalek (issuer signature verified inside the zkVM), SHA-256 (Merkle tree + commitments) |
+| In-guest crypto | ed25519-dalek (issuer signature verified inside the zkVM), SHA-256 (two Merkle trees + per-field commitments) |
 | Proof encoding | risc0-ethereum-contracts (encode_seal), producing a selector-prefixed seal |
 | On-chain verification | Nethermind RISC Zero VerifierRouter via the risc0-interface client; Stellar Protocol 25/26 BN254 and Poseidon host functions |
-| Selective disclosure | X25519 ECDH + ChaCha20-Poly1305 (host side), blinded SHA-256 commitment (in journal) |
-| Smart contracts | Soroban SDK 25.x (escrow), Soroban SDK 27 with hazmat-crypto (Poseidon demo), compiled to wasm32v1-none |
+| Selective disclosure | X25519 ECDH + ChaCha20-Poly1305 (host side), per-field SHA-256 commitments combined into the journal commitment |
+| Smart contracts | Soroban SDK 25.x (escrow: fund / release / refund), Soroban SDK 27 with hazmat-crypto (Poseidon demo), compiled to wasm32v1-none |
 | Native primitive demo | Stellar Poseidon host function (Protocol 25, CAP-0075) via env.crypto_hazmat().poseidon_permutation |
 | Blockchain | Stellar (testnet) |
 | Settlement asset | Stellar stablecoin / Stellar Asset Contract (for example USDC) |
@@ -137,22 +162,28 @@ bill-of-zero
 │   ├── build.rs               Compiles the guest to an ELF and computes the image id
 │   ├── src/lib.rs             Exports LC_CHECK_ELF and LC_CHECK_ID
 │   └── guest/
-│       └── src/main.rs        The 8-rule LC-compliance program that gets proven
+│       └── src/main.rs        The LC-compliance program that gets proven
 ├── host/
-│   └── src/main.rs            Loads documents, builds Merkle proof, signs as issuer, proves,
+│   └── src/main.rs            Loads documents, builds Merkle proofs, signs as issuer, proves,
 │                              encrypts the auditor disclosure; also the `audit` subcommand
+├── tui/
+│   └── src/                   Terminal UI (ratatui): Buyer / Seller / Auditor tabs;
+│                              orchestrates the host prover and the Stellar CLI
 ├── contracts/
 │   ├── escrow/
-│   │   └── src/lib.rs         Soroban escrow: verifies the proof, releases funds,
-│   │                          records the disclosure commitment (soroban-sdk 25)
+│   │   └── src/lib.rs         Soroban escrow: verifies the proof, releases funds, refunds the
+│   │                          remainder, records the disclosure commitment (soroban-sdk 25)
 │   └── poseidon-demo/
 │       └── src/lib.rs         Standalone native-Poseidon settlement receipt (soroban-sdk 27)
 ├── sample_data/
-│   ├── lc_terms.json          Public LC terms
+│   ├── lc_terms.json          Public LC terms (credit limit, deadline, currency, parties)
 │   ├── approved_sellers.json  The bank's approved-exporter allowlist (Merkle leaves)
+│   ├── approved_origins.json  The bank's allowed-origin allowlist (Merkle leaves)
 │   ├── docs_valid.json        Compliant presentation (proof succeeds)
 │   ├── docs_tampered.json     Amount over limit (guest panics, no proof)
 │   └── disclosure.bin         Generated: the encrypted auditor disclosure
+├── deployment.json            Live testnet addresses + image id / terms digest
+├── CLAUDE.md                  Fast setup / run guide for contributors and agents
 └── README.md
 ```
 
@@ -162,7 +193,7 @@ bill-of-zero
 
 ### The guest (the zero-knowledge program)
 
-`methods/guest/src/main.rs` reads the public `LcTerms` and the private `DocumentSet`, enforces the eight compliance rules with assertions, and on success commits a journal. A failed assertion panics, which means no proof can be generated for a non-compliant presentation. The issuer ed25519 signature is verified inside the guest, and the seller's approved-exporter Merkle path is recomputed up to the LC's `approved_root`.
+`methods/guest/src/main.rs` reads the public `LcTerms` and the private `DocumentSet`, enforces the compliance rules with assertions, and on success commits a journal. A failed assertion panics, which means no proof can be generated for a non-compliant presentation. The issuer ed25519 signature is verified inside the guest, and the seller's approved-exporter and the goods' country-of-origin Merkle paths are recomputed up to the LC's `approved_root` and `origins_root`.
 
 ### The journal (80 bytes)
 
@@ -177,20 +208,22 @@ The guest commits a fixed 80-byte journal so the Soroban contract can parse it w
 
 ### The host (the prover)
 
-`host/src/main.rs` maps the JSON sample documents into the shared types, builds the approved-exporter Merkle tree and the seller's inclusion proof, signs the documents with the issuer key, runs the prover with `ProverOpts::groth16()`, encrypts the disclosure to the auditor's X25519 key, and prints the values the escrow needs: `image_id`, `terms_digest`, `disclosure_cmt`, `journal`, `journal_digest`, and the `seal`. The `audit` subcommand decrypts the disclosure and recomputes the commitment.
+`host/src/main.rs` maps the JSON documents into the shared types, builds the approved-exporter and allowed-origin Merkle trees and their inclusion proofs, signs the documents with the issuer key, runs the prover with `ProverOpts::groth16()`, encrypts the per-field disclosure openings to the auditor's X25519 key, and prints the values the escrow needs: `image_id`, `terms_digest`, `disclosure_cmt`, `journal`, `journal_digest`, and the `seal`. The `audit <blob> [profile] [expected]` subcommand decrypts the openings, reveals only the fields the profile is entitled to, and verifies the recomputed commitment matches the on-chain value.
 
 ### The escrow contract
 
-`contracts/escrow/src/lib.rs` is initialized against one LC, storing the expected `terms_digest`, the pinned guest `image_id`, the verifier router address, the settlement token, and the seller. On `release(seal, journal)` it:
+`contracts/escrow/src/lib.rs` is initialized against one LC, storing the expected `terms_digest`, the pinned guest `image_id`, the verifier router address, the settlement token, the seller, the buyer, and an expiry. On `release(seal, journal)` it:
 
 1. Computes `sha256(journal)` and calls `RiscZeroVerifierRouterClient.verify(seal, image_id, journal_digest)`.
 2. Parses the now-verified journal and checks that the `lc_id` and `terms_digest` match this escrow.
-3. Transfers `release_amount` to the seller.
+3. Checks the escrow holds enough to cover `release_amount`, marks the LC released before the external token call (effects-before-interactions, so it is reentrancy-safe), and transfers `release_amount` to the seller.
 4. Records the `disclosure_commitment` so an auditor can later confirm an off-chain disclosure (`disclosure()` view).
 
-### Selective disclosure (auditor view key)
+`refund()` lets the buyer reclaim the escrow's remaining balance after release, or cancel and reclaim the full balance once the LC has expired (so the seller keeps a fair presentation window until then).
 
-The guest commits a blinded `disclosure_commitment` over the documents into the journal, so it is proven and settled on-chain. Off-chain, the host encrypts the matching preimage to the auditor's X25519 public key (ECDH + ChaCha20-Poly1305). The auditor decrypts it and recomputes `sha256(preimage)`; if it equals `escrow.disclosure()`, the auditor is assured the disclosed figures are exactly what settled. The chain still leaks nothing.
+### Selective disclosure (granular auditor view key)
+
+Disclosure is per-field. Each document field gets its own commitment `c_i = sha256(i || value || blinding_i)`, with `blinding_i` derived from a master blinding, and the journal commits the overall `disclosure_commitment = sha256(c_0 || ... || c_n)`. Off-chain, the host encrypts the field openings to the auditor's X25519 public key (ECDH + ChaCha20-Poly1305). An auditor profile (for example `tax`, `regulator`, or `full`) reveals only the fields it is entitled to and recomputes the overall commitment from the openings; if it equals `escrow.disclosure()`, the disclosed figures are provably exactly what settled, while every other field stays hidden. The chain leaks nothing.
 
 ### Native Poseidon settlement receipt (standalone)
 
@@ -205,8 +238,8 @@ This is a separate contract on purpose. The Poseidon host function is only expos
 Prerequisites: Rust with the `wasm32v1-none` target, RISC Zero (`rzup` / `cargo-risczero`), the Stellar CLI, and Docker (for the Groth16 step). On Windows this runs inside WSL2.
 
 ```bash
-# RISC Zero side: shared types, guest ELF, and host
-cargo build
+# RISC Zero side: shared types, guest ELF, host, and the TUI
+cargo build --release
 
 # Escrow contract to WASM
 cd contracts/escrow && stellar contract build
@@ -215,26 +248,36 @@ cd contracts/escrow && stellar contract build
 cd contracts/poseidon-demo && cargo test && stellar contract build
 ```
 
-## Run a real proof locally
+## Run the demo (terminal UI)
+
+The whole flow is driven from a terminal UI. Run it from the repo root; it reads the deployed addresses from `deployment.json` and signs on-chain calls with a local Stellar testnet key (`BZ_SOURCE_KEY`, default `deployer`).
+
+```bash
+cargo run -p bz-tui
+```
+
+`Tab` switches role. **Buyer:** fund the escrow (`f`), refund the remainder (`x`). **Seller:** type the documents, `Enter` to generate a real Groth16 proof, `Ctrl+R` to release. **Auditor:** pick a profile with `←/→`, `a` to decrypt and verify the commitment match. See `CLAUDE.md` for the full setup + keybindings.
+
+## Run a proof from the CLI
 
 Generating a real Groth16 proof requires Docker (the STARK to SNARK wrap runs in a container).
 
 ```bash
-cargo run --bin host -- sample_data/lc_terms.json sample_data/docs_valid.json
+cargo run --release --bin host -- sample_data/lc_terms.json sample_data/docs_valid.json sample_data/approved_sellers.json
 ```
 
 The compliant set prints a seal beginning with the Groth16 selector `73c457ba` and writes `sample_data/disclosure.bin`. The tampered set panics in the guest and produces no proof:
 
 ```bash
-cargo run --bin host -- sample_data/lc_terms.json sample_data/docs_tampered.json
+cargo run --release --bin host -- sample_data/lc_terms.json sample_data/docs_tampered.json sample_data/approved_sellers.json
 # Guest panicked: invoice amount exceeds LC credit limit
 ```
 
-Open the auditor disclosure and confirm it matches the on-chain commitment:
+Open the auditor disclosure for a given profile and verify it matches the on-chain commitment:
 
 ```bash
-cargo run --bin host -- audit sample_data/disclosure.bin
-# invoice amount / buyer balance / shipment date + disclosure_commitment
+cargo run --release --bin host -- audit sample_data/disclosure.bin tax <escrow_disclosure_hex>
+# reveals only the tax-profile fields; commitment match: yes
 ```
 
 For fast logic iteration without Docker, prefix with `RISC0_DEV_MODE=1` (this produces a placeholder seal and is not a secure proof).
@@ -243,13 +286,13 @@ For fast logic iteration without Docker, prefix with `RISC0_DEV_MODE=1` (this pr
 
 ## Status
 
-- Toolchain, scaffold, shared types, 8-rule guest, host, escrow, and Poseidon demo: complete and building.
-- Logic validated in dev mode: compliant documents produce the expected 80-byte journal; tampered documents panic.
-- Real Groth16 proof generated locally, with the correct on-chain seal selector `73c457ba`.
-- Issuer ed25519 signature verified inside the zkVM; approved-exporter Merkle membership and buyer-balance range proof enforced in-guest.
-- Selective disclosure verified: the decrypted auditor preimage reproduces the journal's `disclosure_commitment`.
+- **Deployed and proven end-to-end on Stellar testnet.** A real Groth16 proof is verified on-chain by the Nethermind RISC Zero VerifierRouter and the escrow releases funds to the seller.
+- Full compliance guest (amount, line-item, currency, deadline, party consistency, range proof, approved-exporter and allowed-origin Merkle membership, issuer ed25519 signature), all enforced in-guest; tampered documents panic and produce no proof.
+- Real Groth16 proof carries the correct on-chain seal selector `73c457ba`.
+- Granular selective disclosure: per-field commitments let an auditor profile reveal only entitled fields and verify the recomputed commitment matches `escrow.disclosure()`.
+- Escrow supports fund, release, and refund (remainder after release, or full cancellation after expiry).
+- Terminal UI (ratatui) drives the Buyer / Seller / Auditor flow against the live testnet contracts.
 - Native Poseidon host function executed on-chain in the demo contract's test (deterministic and input-binding).
-- Next: deploy the Nethermind verifier stack and the escrow to Stellar testnet, then call `release` to settle on-chain.
 
 ---
 
