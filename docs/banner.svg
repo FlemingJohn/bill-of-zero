@@ -1,11 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="175" viewBox="0 0 720 175" role="img" aria-label="Bill of Zero">
-  <rect width="720" height="175" rx="10" fill="#0F0F0F"/>
-  <g font-family="'DejaVu Sans Mono','SF Mono',Menlo,Consolas,monospace" font-size="18" font-weight="bold" fill="#BDF589" xml:space="preserve">
-    <text x="24" y="42">████  ███ █     █         ███  █████    █████ █████ ████   ███  </text>
-    <text x="24" y="62">█   █  █  █     █        █   █ █           █  █     █   █ █   █ </text>
-    <text x="24" y="82">████   █  █     █        █   █ ████       █   ████  ████  █   █ </text>
-    <text x="24" y="102">█   █  █  █     █        █   █ █         █    █     █  █  █   █ </text>
-    <text x="24" y="122">████  ███ █████ █████     ███  █        █████ █████ █   █  ███  </text>
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="180" viewBox="0 0 820 180" role="img" aria-label="Bill of Zero">
+  <defs>
+    <linearGradient id="emblem" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#BDF589"/>
+      <stop offset="1" stop-color="#636EB4"/>
+    </linearGradient>
+    <radialGradient id="glowGreen" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#BDF589" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#BDF589" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowBlue" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#636EB4" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#636EB4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="820" height="180" rx="16" fill="#0F0F0F"/>
+  <rect x="0.5" y="0.5" width="819" height="179" rx="16" fill="none" stroke="#BDF589" stroke-opacity="0.18"/>
+
+  <!-- ambient glow -->
+  <circle cx="110" cy="40" r="240" fill="url(#glowGreen)"/>
+  <circle cx="760" cy="170" r="260" fill="url(#glowBlue)"/>
+
+  <!-- shield emblem -->
+  <g transform="translate(48,52)">
+    <rect width="74" height="74" rx="16" fill="url(#emblem)"/>
+    <rect x="3" y="3" width="68" height="68" rx="13" fill="#0F0F0F"/>
+    <path d="M37 16 L57 24 V40 C57 53 48 60 37 64 C26 60 17 53 17 40 V24 Z"
+          fill="none" stroke="#BDF589" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M29 40 l6 6 l12 -14" fill="none" stroke="#BDF589" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round"/>
   </g>
-  <text x="360" y="154" text-anchor="middle" font-family="'DejaVu Sans Mono','SF Mono',Menlo,Consolas,monospace" font-size="14" fill="#8C8C8C">Zero-knowledge Letter-of-Credit settlement on Stellar</text>
+
+  <!-- wordmark -->
+  <text x="150" y="92" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif"
+        font-size="54" font-weight="800" letter-spacing="-1">
+    <tspan fill="#FFFFFF">Bill of </tspan><tspan fill="#BDF589">Zero</tspan>
+  </text>
+
+  <!-- tagline -->
+  <text x="152" y="124" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif"
+        font-size="17" fill="#8C8C8C">Zero-knowledge Letter-of-Credit settlement on Stellar</text>
+
+  <!-- tech chips -->
+  <g font-family="'DejaVu Sans Mono',Menlo,Consolas,monospace" font-size="12" fill="#636EB4">
+    <text x="152" y="150">RISC Zero zkVM</text>
+    <text x="262" y="150" fill="#8C8C8C">·</text>
+    <text x="276" y="150">Groth16 on Stellar</text>
+    <text x="408" y="150" fill="#8C8C8C">·</text>
+    <text x="422" y="150">Soroban</text>
+  </g>
 </svg>
