@@ -111,9 +111,8 @@ fn render_seller(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(left).block(panel("Seller · documents")), cols[0]);
 
     // Right: proof output + controls.
-    let mode = if app.dev_mode { Span::styled("DEV (instant)", Style::default().fg(BLUE)) } else { Span::styled("REAL (minutes)", Style::default().fg(GREEN)) };
     let mut right: Vec<Line> = vec![
-        Line::from(vec![Span::styled("Proving mode: ", Style::default().fg(DIM)), mode]),
+        Line::from(vec![Span::styled("Real Groth16 proof", Style::default().fg(GREEN).add_modifier(Modifier::BOLD)), Span::styled("  · takes a few minutes", Style::default().fg(DIM))]),
         Line::from(""),
     ];
     if let Some(p) = &app.proof {
@@ -122,14 +121,18 @@ fn render_seller(f: &mut Frame, app: &App, area: Rect) {
         right.push(field("disclosure_cmt", &trunc(&p.disclosure_cmt)));
         right.push(field("journal", &trunc(&p.journal)));
         right.push(Line::from(vec![Span::styled("seal          ", Style::default().fg(DIM)), Span::styled(trunc(&p.seal), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))]));
-        let sel = if p.seal.starts_with("73c457ba") { "✓ real Groth16 selector 73c457ba" } else if p.seal.starts_with("ffffffff") { "dev-mode seal (not verifiable on-chain)" } else { "" };
-        right.push(Line::from(Span::styled(sel, Style::default().fg(if sel.starts_with('✓') { GREEN } else { BLUE }))));
+        let (msg, color) = if p.seal.starts_with("73c457ba") {
+            ("✓ real Groth16 selector 73c457ba — verifiable on-chain", GREEN)
+        } else {
+            ("⚠ unexpected seal selector", RED)
+        };
+        right.push(Line::from(Span::styled(msg, Style::default().fg(color))));
     } else {
         right.push(Line::from(Span::styled("No proof yet.", Style::default().fg(DIM))));
         right.push(Line::from(Span::styled("Type the documents, then press [p].", Style::default().fg(DIM))));
     }
     right.push(Line::from(""));
-    right.push(Line::from(vec![key("↑/↓"), Span::raw(" field  "), key("p"), Span::raw(" prove  "), key("d"), Span::raw(" dev/real  "), key("r"), Span::raw(" release")]));
+    right.push(Line::from(vec![key("↑/↓"), Span::raw(" field  "), key("p"), Span::raw(" prove  "), key("r"), Span::raw(" release")]));
     f.render_widget(Paragraph::new(right).block(panel("Seller · proof")).wrap(Wrap { trim: true }), cols[1]);
 }
 

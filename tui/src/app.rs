@@ -36,7 +36,6 @@ pub struct App {
     pub tab: usize,
     pub fields: [String; 3],
     pub field_idx: usize,
-    pub dev_mode: bool,
     pub proof: Option<Proof>,
     pub disclosure: Option<Disclosure>,
     pub status: Option<Status>,
@@ -58,7 +57,6 @@ impl App {
             tab: 0,
             fields: ["95000".into(), "2024-12-31".into(), "150000".into()],
             field_idx: 0,
-            dev_mode: true,
             proof: None,
             disclosure: None,
             status: None,
@@ -87,8 +85,7 @@ impl App {
             self.busy = None;
             match msg {
                 Msg::Proof(Ok(p)) => {
-                    let kind = if p.dev_mode { "dev" } else { "real" };
-                    self.push(format!("✓ proof ({kind}) — seal {}…", short(&p.seal)));
+                    self.push(format!("✓ real Groth16 proof — seal {}…", short(&p.seal)));
                     self.proof = Some(p);
                 }
                 Msg::Proof(Err(e)) => self.push(format!("✗ {e}")),
@@ -155,7 +152,6 @@ impl App {
                 self.fields[self.field_idx].pop();
             }
             KeyCode::Enter | KeyCode::Char('p') => self.do_prove(),
-            KeyCode::Char('d') => self.dev_mode = !self.dev_mode,
             KeyCode::Char('r') => self.do_release(),
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char(c) => {
@@ -217,9 +213,8 @@ impl App {
             }
         };
         let cfg = self.cfg.clone();
-        let dev = self.dev_mode;
         self.run("prove", move || {
-            Msg::Proof(backend::prove(&cfg, &input, dev).map_err(|e| e.to_string()))
+            Msg::Proof(backend::prove(&cfg, &input).map_err(|e| e.to_string()))
         });
     }
 

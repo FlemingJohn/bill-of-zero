@@ -28,7 +28,6 @@ pub struct Proof {
     pub disclosure_cmt: String,
     pub journal: String,
     pub seal: String,
-    pub dev_mode: bool,
 }
 
 /// Decoded auditor disclosure (from `host audit`).
@@ -42,25 +41,24 @@ pub struct Disclosure {
     pub commitment: String,
 }
 
-/// Generate a proof for the given documents. `dev` selects instant dev-mode
-/// (fake seal, ~2s) vs a real Groth16 proof (minutes). On a guest panic
-/// (non-compliant docs) this returns an error carrying the panic message.
-pub fn prove(cfg: &Config, input: &DocInput, dev: bool) -> Result<Proof> {
+/// Generate a real Groth16 proof for the given documents (selector 73c457ba).
+/// Takes minutes. On a guest panic (non-compliant docs) this returns an error
+/// carrying the panic message — no proof can exist, which is the whole point.
+pub fn prove(cfg: &Config, input: &DocInput) -> Result<Proof> {
     let docs_path = cfg.root.join("sample_data/.tui_docs.json");
     let docs_json = build_docs_json(cfg, input);
     std::fs::write(&docs_path, docs_json).context("writing temp docs file")?;
 
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(&cfg.root)
+    // Always a real proof — never RISC0_DEV_MODE. The seal must verify on-chain.
+    let out = Command::new("cargo")
+        .current_dir(&cfg.root)
+        .env_remove("RISC0_DEV_MODE")
         .args(["run", "--release", "--quiet", "--bin", "host", "--"])
         .arg(cfg.root.join("sample_data/lc_terms.json"))
         .arg(&docs_path)
-        .arg(cfg.root.join("sample_data/approved_sellers.json"));
-    if dev {
-        cmd.env("RISC0_DEV_MODE", "1");
-    }
-
-    let out = cmd.output().context("failed to launch `cargo run --bin host`")?;
+        .arg(cfg.root.join("sample_data/approved_sellers.json"))
+        .output()
+        .context("failed to launch `cargo run --bin host`")?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -84,7 +82,6 @@ pub fn prove(cfg: &Config, input: &DocInput, dev: bool) -> Result<Proof> {
         disclosure_cmt: get("disclosure_cmt"),
         journal: get("journal"),
         seal,
-        dev_mode: dev,
     })
 }
 
