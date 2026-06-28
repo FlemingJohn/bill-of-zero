@@ -1,6 +1,0 @@
-{
-  "name": "Bill of Zero",
-  "description": "A responsive single-page frontend for Bill of Zero — privacy-preserving zero-knowledge Letter-of-Credit settlement on Stellar, with a live settlement stream, proof generation, and escrow deployment flows.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}
