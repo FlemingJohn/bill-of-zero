@@ -1,12 +1,15 @@
 //! Thin orchestration over the tools that already work:
-//!   - the `host` binary  → real/dev Groth16 proving and the auditor disclosure
-//!   - the `stellar` CLI  → on-chain fund / release / balance / is_released
+//!   - the `host` binary  → real Groth16 proving and the auditor disclosure
+//!   - the `stellar` CLI  → on-chain fund / release / refund / balance / is_released
 //!
 //! Every function here blocks; the app runs them on a worker thread (see
-//! `app.rs`) so the UI never freezes.
+//! `app.rs`) so the UI never freezes. `prove` additionally streams progress
+//! lines back through a callback while it runs.
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, Stdio};
+use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -30,6 +33,12 @@ pub struct Proof {
     pub seal: String,
 }
 
+/// Result of a state-changing on-chain call.
+#[derive(Debug, Clone, Default)]
+pub struct TxResult {
+    pub hash: Option<String>,
+}
+
 /// Decoded auditor disclosure (from `host audit`).
 #[derive(Debug, Clone, Default)]
 pub struct Disclosure {
@@ -41,40 +50,60 @@ pub struct Disclosure {
     pub commitment: String,
 }
 
-/// Generate a real Groth16 proof for the given documents (selector 73c457ba).
-/// Takes minutes. On a guest panic (non-compliant docs) this returns an error
-/// carrying the panic message — no proof can exist, which is the whole point.
-pub fn prove(cfg: &Config, input: &DocInput) -> Result<Proof> {
+/// Generate a real Groth16 proof (selector 73c457ba). Takes minutes; `progress`
+/// is called with each non-empty stderr line as the zkVM runs. On a guest panic
+/// (non-compliant docs) this returns an error carrying the panic message — no
+/// proof can exist, which is the whole point.
+pub fn prove(cfg: &Config, input: &DocInput, progress: &dyn Fn(String)) -> Result<Proof> {
     let docs_path = cfg.root.join("sample_data/.tui_docs.json");
-    let docs_json = build_docs_json(cfg, input);
-    std::fs::write(&docs_path, docs_json).context("writing temp docs file")?;
+    std::fs::write(&docs_path, build_docs_json(cfg, input)).context("writing temp docs file")?;
 
     // Always a real proof — never RISC0_DEV_MODE. The seal must verify on-chain.
-    let out = Command::new("cargo")
+    let mut child = Command::new("cargo")
         .current_dir(&cfg.root)
         .env_remove("RISC0_DEV_MODE")
         .args(["run", "--release", "--quiet", "--bin", "host", "--"])
         .arg(cfg.root.join("sample_data/lc_terms.json"))
         .arg(&docs_path)
         .arg(cfg.root.join("sample_data/approved_sellers.json"))
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("failed to launch `cargo run --bin host`")?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
 
-    if !out.status.success() {
-        // Tampered / non-compliant docs → the guest panics on purpose.
-        if let Some(p) = stderr.lines().find(|l| l.contains("Guest panicked:")) {
+    // Collect stdout (the result lines) on a thread while we stream stderr.
+    let mut stdout = child.stdout.take().unwrap();
+    let stdout_handle = thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+
+    let mut err_lines: Vec<String> = Vec::new();
+    for line in BufReader::new(child.stderr.take().unwrap()).lines() {
+        let line = line.unwrap_or_default();
+        if !line.trim().is_empty() {
+            progress(line.clone());
+            err_lines.push(line);
+        }
+    }
+
+    let status = child.wait().context("waiting for prover")?;
+    let stdout = stdout_handle.join().unwrap_or_default();
+
+    if !status.success() {
+        if let Some(p) = err_lines.iter().find(|l| l.contains("Guest panicked:")) {
             bail!("{}", p.trim());
         }
-        bail!("proving failed:\n{}", tail(&stderr, 800));
+        let tail: Vec<String> = err_lines.iter().rev().take(6).rev().cloned().collect();
+        bail!("proving failed:\n{}", tail.join("\n"));
     }
 
     let f = parse_kv(&stdout);
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let seal = get("seal");
     if seal.is_empty() {
-        bail!("proof produced no seal:\n{}", tail(&stdout, 800));
+        bail!("proof produced no seal");
     }
     Ok(Proof {
         lc_id: get("lc_id"),
@@ -104,39 +133,40 @@ pub fn audit(cfg: &Config) -> Result<Disclosure> {
         ship_date: get("shipment date (unix)"),
         buyer_id: get("invoice buyer_id"),
         seller_id: get("invoice seller_id"),
-        // value trails with "(must equal …)" — keep just the hex token.
         commitment: get("disclosure_commitment").split_whitespace().next().unwrap_or("").to_string(),
     })
 }
 
 /// `is_released()` on the escrow (read-only).
 pub fn is_released(cfg: &Config, source: &str) -> Result<bool> {
-    let v = invoke(cfg, source, &cfg.deployment.escrow, true, &["is_released"])?;
-    Ok(v.trim().trim_matches('"') == "true")
+    let (out, _) = invoke_raw(cfg, source, &cfg.deployment.escrow, true, &["is_released"])?;
+    Ok(out.trim().trim_matches('"') == "true")
 }
 
 /// Token balance of an account/contract, in stroops (read-only).
 pub fn balance(cfg: &Config, source: &str, id: &str) -> Result<String> {
-    let v = invoke(cfg, source, &cfg.deployment.token, true, &["balance", "--id", id])?;
-    Ok(v.trim().trim_matches('"').to_string())
+    let (out, _) = invoke_raw(cfg, source, &cfg.deployment.token, true, &["balance", "--id", id])?;
+    Ok(out.trim().trim_matches('"').to_string())
 }
 
 /// Fund the escrow from the connected source account.
-pub fn fund(cfg: &Config, source: &str, amount: u64) -> Result<String> {
+pub fn fund(cfg: &Config, source: &str, amount: u64) -> Result<TxResult> {
     let from = key_address(source)?;
     let amount = amount.to_string();
-    invoke(cfg, source, &cfg.deployment.escrow, false, &["fund", "--from", &from, "--amount", &amount])
+    let (out, err) = invoke_raw(cfg, source, &cfg.deployment.escrow, false, &["fund", "--from", &from, "--amount", &amount])?;
+    Ok(TxResult { hash: find_hash(&format!("{out}\n{err}")) })
 }
 
 /// Release the escrow with a proof (seal + journal).
-pub fn release(cfg: &Config, source: &str, seal_hex: &str, journal_hex: &str) -> Result<String> {
-    invoke(
-        cfg,
-        source,
-        &cfg.deployment.escrow,
-        false,
-        &["release", "--seal", seal_hex, "--journal", journal_hex],
-    )
+pub fn release(cfg: &Config, source: &str, seal_hex: &str, journal_hex: &str) -> Result<TxResult> {
+    let (out, err) = invoke_raw(cfg, source, &cfg.deployment.escrow, false, &["release", "--seal", seal_hex, "--journal", journal_hex])?;
+    Ok(TxResult { hash: find_hash(&format!("{out}\n{err}")) })
+}
+
+/// Refund the escrow remainder (or cancel after expiry) back to the buyer.
+pub fn refund(cfg: &Config, source: &str) -> Result<TxResult> {
+    let (out, err) = invoke_raw(cfg, source, &cfg.deployment.escrow, false, &["refund"])?;
+    Ok(TxResult { hash: find_hash(&format!("{out}\n{err}")) })
 }
 
 // --- internals ------------------------------------------------------------
@@ -156,10 +186,9 @@ pub fn key_address(source: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Run `stellar contract invoke` against a contract, passing rpc-url +
-/// passphrase explicitly so we don't depend on a named network being configured.
-/// `view` adds `--send=no` so read-only calls only simulate (no tx, no fee).
-fn invoke(cfg: &Config, source: &str, contract: &str, view: bool, fn_args: &[&str]) -> Result<String> {
+/// Run `stellar contract invoke`, returning (stdout, stderr). `view` adds
+/// `--send=no` so reads only simulate (no tx, no fee).
+fn invoke_raw(cfg: &Config, source: &str, contract: &str, view: bool, fn_args: &[&str]) -> Result<(String, String)> {
     let d = &cfg.deployment;
     let mut cmd = Command::new("stellar");
     cmd.args(["contract", "invoke", "--id", contract, "--source-account", source])
@@ -176,8 +205,7 @@ fn invoke(cfg: &Config, source: &str, contract: &str, view: bool, fn_args: &[&st
     if !out.status.success() {
         return Err(anyhow!("{}", first_error_line(&stderr)));
     }
-    // Successful invokes print the return value on stdout; tx logs go to stderr.
-    Ok(if stdout.trim().is_empty() { stderr.trim().to_string() } else { stdout })
+    Ok((stdout, stderr))
 }
 
 fn build_docs_json(cfg: &Config, i: &DocInput) -> String {
@@ -208,6 +236,26 @@ fn parse_kv(text: &str) -> HashMap<String, String> {
         }
     }
     m
+}
+
+/// Find the first 64-hex-char run (a Stellar transaction hash) in CLI output.
+fn find_hash(s: &str) -> Option<String> {
+    let mut run = 0usize;
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        if c.is_ascii_hexdigit() {
+            if run == 0 {
+                start = i;
+            }
+            run += 1;
+            if run == 64 {
+                return Some(s[start..start + 64].to_lowercase());
+            }
+        } else {
+            run = 0;
+        }
+    }
+    None
 }
 
 fn first_error_line(stderr: &str) -> String {
