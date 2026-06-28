@@ -137,17 +137,26 @@ impl EscrowContract {
             panic!("journal terms digest does not match this LC");
         }
 
-        // 4. Effects before interactions (reentrancy-safe): mark released and
+        // 4. Ensure the escrow can actually cover the invoiced amount. Fail fast
+        //    with a clear reason rather than a cryptic token "insufficient
+        //    balance" deep in the transfer. The proof stays unconsumed, so the
+        //    seller can re-present once the buyer tops the escrow up.
+        let token = token::Client::new(&env, &cfg.token);
+        let balance = token.balance(&env.current_contract_address());
+        if (release_amount as i128) > balance {
+            panic!("escrow underfunded: balance is below the invoiced amount");
+        }
+
+        // 5. Effects before interactions (reentrancy-safe): mark released and
         //    record the disclosure commitment BEFORE the external token call, so
         //    a hookable token cannot re-enter release() and settle twice. If the
-        //    transfer below panics (e.g. under-funded), the whole tx reverts and
-        //    these writes roll back with it.
+        //    transfer below panics, the whole tx reverts and these roll back too.
         env.storage().instance().set(&DataKey::Released, &true);
         env.storage().instance().set(&DataKey::Disclosure, &disclosure);
 
-        // 5. Settle: release the proven amount to the seller. Any remainder
+        // 6. Settle: release the proven amount to the seller. Any remainder
         //    stays in the escrow for the buyer to reclaim via refund().
-        token::Client::new(&env, &cfg.token).transfer(
+        token.transfer(
             &env.current_contract_address(),
             &cfg.seller,
             &(release_amount as i128),
