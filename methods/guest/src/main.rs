@@ -62,12 +62,38 @@ fn main() {
         "buyer balance does not cover the LC credit line"
     );
 
+    // Rule 6b (line-item integrity): the invoiced total must equal
+    // quantity * unit_price. Checked multiply so an overflow can't sneak a
+    // bogus total past the rule.
+    let computed = docs
+        .invoice
+        .quantity
+        .checked_mul(docs.invoice.unit_price)
+        .expect("quantity * unit_price overflows");
+    assert!(
+        docs.invoice.amount == computed,
+        "invoice amount does not equal quantity * unit_price"
+    );
+
+    // Rule 6c (currency): the invoice must be denominated in the LC's currency.
+    assert!(
+        docs.invoice.currency == terms.currency,
+        "invoice currency does not match the LC currency"
+    );
+
     // Rule 7 (Merkle membership): the seller must be on the bank's approved
     // exporter allowlist. We prove the seller_id hashes up to the LC's
     // approved_root without revealing which leaf it is.
     assert!(
         merkle_root(&docs.invoice.seller_id, &docs.seller_merkle) == terms.approved_root,
         "seller is not in the approved-exporter allowlist"
+    );
+
+    // Rule 7b (origin membership): the goods' country of origin must be on the
+    // LC's allowed-origin allowlist, proved without revealing which country.
+    assert!(
+        merkle_root(&docs.bill_of_lading.origin_id, &docs.origin_merkle) == terms.origins_root,
+        "country of origin is not in the LC's allowed-origin list"
     );
 
     // Rule 8 (issuer signature): the documents must be signed by the LC's

@@ -2,6 +2,7 @@
   "lc_id": 1001,
   "credit_limit_usdc": 100000,
   "shipment_deadline_unix": 1735689600,
+  "currency": "USDC",
   "buyer": "ACME Imports LLC",
   "seller": "Shenzhen Optics Co"
 }

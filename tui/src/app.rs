@@ -14,7 +14,23 @@ use crate::config::Config;
 use crate::util;
 
 pub const TABS: [&str; 3] = ["Buyer", "Seller", "Auditor"];
-pub const FIELDS: [&str; 3] = ["Invoice amount (USDC)", "Ship date (YYYY-MM-DD)", "Buyer balance (USDC)"];
+
+/// Seller's trade-document fields (the seller no longer sets the buyer balance).
+pub const SELLER_FIELDS: [&str; 7] = [
+    "Quantity",
+    "Unit price (USDC)",
+    "Ship date (YYYY-MM-DD)",
+    "Currency",
+    "Country of origin",
+    "Bill-of-lading no.",
+    "Carrier / vessel",
+];
+
+/// Buyer's fields: how much to fund, and the buyer's own private balance.
+pub const BUYER_FIELDS: [&str; 2] = ["Fund amount (USDC)", "Buyer balance (USDC)"];
+
+/// Auditor entitlement profiles.
+pub const PROFILES: [&str; 3] = ["tax", "regulator", "full"];
 
 /// Live on-chain view of the escrow.
 #[derive(Debug, Clone)]
@@ -53,9 +69,11 @@ pub struct App {
     pub cfg: Config,
     pub source: String,
     pub tab: usize,
-    pub fields: [String; 3],
-    pub field_idx: usize,
-    pub fund_amount: String,
+    pub seller_fields: [String; 7],
+    pub seller_idx: usize,
+    pub buyer_fields: [String; 2],
+    pub buyer_idx: usize,
+    pub audit_profile: usize,
     pub proof: Option<Proof>,
     pub proof_progress: Option<String>,
     pub disclosure: Option<Disclosure>,
@@ -80,11 +98,22 @@ impl App {
         // The account that signs fund/release/refund. `deployer` holds the
         // tokens + XLM from the original deploy; override with BZ_SOURCE_KEY.
         let source = std::env::var("BZ_SOURCE_KEY").unwrap_or_else(|_| "deployer".to_string());
+        let currency = cfg.terms.currency.clone();
         let mut app = Self {
             tab: 0,
-            fields: ["95000".into(), "2024-12-31".into(), "150000".into()],
-            field_idx: 0,
-            fund_amount: "100000".into(),
+            seller_fields: [
+                "5000".into(),       // quantity
+                "19".into(),         // unit price
+                "2024-12-31".into(), // ship date
+                currency,            // currency (defaults to the LC currency)
+                "China".into(),      // country of origin
+                "778412".into(),     // bol number
+                "Maersk Line".into(),// carrier
+            ],
+            seller_idx: 0,
+            buyer_fields: ["100000".into(), "150000".into()],
+            buyer_idx: 0,
+            audit_profile: 0,
             proof: None,
             proof_progress: None,
             disclosure: None,
@@ -113,16 +142,25 @@ impl App {
         FRAMES[self.spin % FRAMES.len()]
     }
 
-    /// Seconds the current task has been running, if any.
     pub fn elapsed_secs(&self) -> Option<u64> {
         self.busy_since.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Derived invoice amount = quantity * unit_price (best-effort from inputs).
+    pub fn derived_amount(&self) -> Option<u64> {
+        let q: u64 = self.seller_fields[0].trim().parse().ok()?;
+        let p: u64 = self.seller_fields[1].trim().parse().ok()?;
+        Some(q.saturating_mul(p))
+    }
+
+    pub fn current_profile(&self) -> &'static str {
+        PROFILES[self.audit_profile]
     }
 
     /// Called ~10x/sec: advance the spinner, auto-refresh, drain worker results.
     pub fn on_tick(&mut self) {
         self.spin = self.spin.wrapping_add(1);
 
-        // Poll on-chain status while idle (independent of the busy lock).
         if self.busy.is_none() && !self.refreshing {
             let due = self.last_refresh.map_or(true, |t| t.elapsed().as_secs() >= 5);
             if due {
@@ -161,7 +199,7 @@ impl App {
                         }
                         None => self.push(format!("✓ {label} submitted on-chain")),
                     }
-                    self.last_refresh = None; // refresh balances immediately
+                    self.last_refresh = None;
                 }
                 Msg::Tx { label, res: Err(e) } => {
                     self.clear_busy();
@@ -169,7 +207,7 @@ impl App {
                 }
                 Msg::Audit(Ok(d)) => {
                     self.clear_busy();
-                    self.push("✓ disclosure decrypted by auditor".into());
+                    self.push(format!("✓ disclosure decrypted ({} profile)", d.profile));
                     self.disclosure = Some(d);
                 }
                 Msg::Audit(Err(e)) => {
@@ -184,12 +222,10 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        // Help overlay swallows the next key.
         if self.show_help {
             self.show_help = false;
             return;
         }
-        // Confirmation prompt: y proceeds, anything else cancels.
         if let Some(p) = self.confirm {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -203,7 +239,6 @@ impl App {
             }
             return;
         }
-        // Global.
         if key.code == KeyCode::Esc
             || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
         {
@@ -212,7 +247,6 @@ impl App {
         }
         match key.code {
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Tab => self.tab = (self.tab + 1) % TABS.len(),
             KeyCode::BackTab => self.tab = (self.tab + TABS.len() - 1) % TABS.len(),
             _ => match self.tab {
@@ -225,36 +259,54 @@ impl App {
 
     fn key_buyer(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Up => self.buyer_idx = (self.buyer_idx + BUYER_FIELDS.len() - 1) % BUYER_FIELDS.len(),
+            KeyCode::Down => self.buyer_idx = (self.buyer_idx + 1) % BUYER_FIELDS.len(),
+            KeyCode::Backspace => {
+                self.buyer_fields[self.buyer_idx].pop();
+            }
             KeyCode::Char('f') => self.do_fund(),
             KeyCode::Char('x') => self.confirm = Some(Pending::Refund),
             KeyCode::Char('s') => self.refresh_status(),
-            KeyCode::Backspace => {
-                self.fund_amount.pop();
-            }
-            KeyCode::Char(c) if c.is_ascii_digit() => self.fund_amount.push(c),
+            KeyCode::Char(c) if c.is_ascii_digit() => self.buyer_fields[self.buyer_idx].push(c),
             _ => {}
         }
     }
 
     fn key_auditor(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Char('a') {
-            self.do_audit();
+        match key.code {
+            KeyCode::Char('a') => self.do_audit(),
+            KeyCode::Left => self.audit_profile = (self.audit_profile + PROFILES.len() - 1) % PROFILES.len(),
+            KeyCode::Right | KeyCode::Char('t') => self.audit_profile = (self.audit_profile + 1) % PROFILES.len(),
+            _ => {}
+        }
+    }
+
+    /// Allowed input per seller field: numeric, date, or free text.
+    fn seller_char_ok(idx: usize, c: char) -> bool {
+        match idx {
+            0 | 1 | 5 => c.is_ascii_digit(),                 // quantity, price, bol no.
+            2 => c.is_ascii_digit() || c == '-',             // ship date
+            _ => c.is_ascii_alphanumeric() || c == ' ' || c == '-', // currency, origin, carrier
         }
     }
 
     fn key_seller(&mut self, key: KeyEvent) {
+        // Ctrl+R releases — a modifier so it never collides with typing 'r' into
+        // a text field like "Carrier".
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+            self.request_release();
+            return;
+        }
         match key.code {
-            KeyCode::Up => self.field_idx = (self.field_idx + FIELDS.len() - 1) % FIELDS.len(),
-            KeyCode::Down => self.field_idx = (self.field_idx + 1) % FIELDS.len(),
+            KeyCode::Up => self.seller_idx = (self.seller_idx + SELLER_FIELDS.len() - 1) % SELLER_FIELDS.len(),
+            KeyCode::Down => self.seller_idx = (self.seller_idx + 1) % SELLER_FIELDS.len(),
             KeyCode::Backspace => {
-                self.fields[self.field_idx].pop();
+                self.seller_fields[self.seller_idx].pop();
             }
-            KeyCode::Enter | KeyCode::Char('p') => self.do_prove(),
-            KeyCode::Char('r') => self.request_release(),
+            KeyCode::Enter => self.do_prove(),
             KeyCode::Char(c) => {
-                let date_field = self.field_idx == 1;
-                if c.is_ascii_digit() || (c == '-' && date_field) {
-                    self.fields[self.field_idx].push(c);
+                if Self::seller_char_ok(self.seller_idx, c) {
+                    self.seller_fields[self.seller_idx].push(c);
                 }
             }
             _ => {}
@@ -277,13 +329,18 @@ impl App {
     }
 
     fn parse_input(&self) -> Result<DocInput, String> {
-        let amount = self.fields[0].trim().parse::<u64>().map_err(|_| "invoice amount must be a whole number".to_string())?;
-        let ship = util::ymd_to_unix(&self.fields[1]).map_err(|e| e.to_string())?;
-        let balance = self.fields[2].trim().parse::<u64>().map_err(|_| "buyer balance must be a whole number".to_string())?;
-        Ok(DocInput { amount_usdc: amount, ship_date_unix: ship, buyer_balance_usdc: balance })
+        let quantity = self.seller_fields[0].trim().parse::<u64>().map_err(|_| "quantity must be a whole number".to_string())?;
+        let unit_price = self.seller_fields[1].trim().parse::<u64>().map_err(|_| "unit price must be a whole number".to_string())?;
+        let ship_date = util::ymd_to_unix(&self.seller_fields[2]).map_err(|e| e.to_string())?;
+        let currency = self.seller_fields[3].trim().to_string();
+        let origin = self.seller_fields[4].trim().to_string();
+        let bol_number = self.seller_fields[5].trim().parse::<u64>().map_err(|_| "bol number must be a whole number".to_string())?;
+        let carrier = self.seller_fields[6].trim().to_string();
+        let buyer_balance = self.buyer_fields[1].trim().parse::<u64>().map_err(|_| "buyer balance (Buyer tab) must be a whole number".to_string())?;
+        Ok(DocInput { quantity, unit_price, ship_date_unix: ship_date, currency, origin, bol_number, carrier, buyer_balance_usdc: buyer_balance })
     }
 
-    // --- actions (each spawns a worker thread) ----------------------------
+    // --- actions ----------------------------------------------------------
 
     fn run<F>(&mut self, label: &str, f: F)
     where
@@ -355,7 +412,7 @@ impl App {
     }
 
     fn do_fund(&mut self) {
-        let amount = match self.fund_amount.trim().parse::<u64>() {
+        let amount = match self.buyer_fields[0].trim().parse::<u64>() {
             Ok(a) if a > 0 => a,
             _ => {
                 self.push("✗ fund amount must be a positive number".into());
@@ -394,8 +451,12 @@ impl App {
 
     fn do_audit(&mut self) {
         let cfg = self.cfg.clone();
+        let src = self.source.clone();
+        let profile = self.current_profile().to_string();
         self.run("audit", move || {
-            Msg::Audit(backend::audit(&cfg).map_err(|e| e.to_string()))
+            // Fetch the on-chain commitment so the auditor can verify the match.
+            let expected = backend::escrow_disclosure(&cfg, &src);
+            Msg::Audit(backend::audit(&cfg, &profile, expected.as_deref()).map_err(|e| e.to_string()))
         });
     }
 

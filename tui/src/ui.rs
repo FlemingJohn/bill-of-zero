@@ -3,7 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use crate::app::{App, Pending, FIELDS, TABS};
+use crate::app::{App, Pending, BUYER_FIELDS, PROFILES, SELLER_FIELDS};
 use crate::util::{self, group};
 
 const GREEN: Color = Color::Rgb(189, 245, 137);
@@ -67,7 +67,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
 
 fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     let title = format!(" LC #{} · {} ", app.cfg.deployment.lc_id, app.cfg.deployment.network);
-    let tabs = Tabs::new(TABS.iter().map(|t| Line::from(format!(" {t} "))).collect::<Vec<_>>())
+    let tabs = Tabs::new(crate::app::TABS.iter().map(|t| Line::from(format!(" {t} "))).collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(BLUE)))
         .select(app.tab)
         .highlight_style(Style::default().fg(Color::Black).bg(GREEN).add_modifier(Modifier::BOLD))
@@ -75,7 +75,6 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, area);
 }
 
-/// ① Fund → ② Prove → ③ Release → ④ Refund, lit by on-chain state.
 fn render_flow(f: &mut Frame, app: &App, area: Rect) {
     let escrow_pos = app.status.as_ref().map_or(false, |s| s.escrow_bal.trim().parse::<i128>().unwrap_or(0) > 0);
     let escrow_zero = app.status.as_ref().map_or(false, |s| s.escrow_bal.trim().parse::<i128>().unwrap_or(0) == 0);
@@ -114,39 +113,47 @@ fn panel(title: &str) -> Block<'_> {
 
 fn render_buyer(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.cfg.terms;
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![Span::styled("Role: ", Style::default().fg(DIM)), Span::styled(format!("BUYER · {}", t.buyer), Style::default().fg(BLUE).add_modifier(Modifier::BOLD))]),
         Line::from(""),
-        Line::from("The buyer locks funds in escrow, reclaims any remainder after"),
-        Line::from("settlement, and can cancel for a refund once the LC expires."),
+        Line::from("The buyer locks funds in escrow and owns the private balance"),
+        Line::from("used by the range proof. Reclaims the remainder after settlement."),
         Line::from(""),
-        Line::from(vec![Span::styled("Credit limit: ", Style::default().fg(DIM)), Span::raw(format!("{} USDC", group(&t.credit_limit_usdc.to_string())))]),
-        Line::from(vec![Span::styled("Escrow:       ", Style::default().fg(DIM)), Span::raw(&app.cfg.deployment.escrow)]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▸ Fund amount (USDC)   ", Style::default().fg(Color::White)),
-            Span::styled(format!("{}▏", app.fund_amount), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(""),
-        Line::from(vec![key("f"), Span::raw(" Fund    "), key("x"), Span::raw(" Refund to buyer    "), key("s"), Span::raw(" Refresh")]),
     ];
+    for (i, label) in BUYER_FIELDS.iter().enumerate() {
+        let focused = i == app.buyer_idx;
+        let val = &app.buyer_fields[i];
+        let val_span = if focused {
+            Span::styled(format!("{val}▏"), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw(val.clone())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if focused { "▸ " } else { "  " }, Style::default().fg(GREEN)),
+            Span::styled(format!("{label:<22}"), Style::default().fg(if focused { Color::White } else { DIM })),
+            val_span,
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::styled("Credit limit: ", Style::default().fg(DIM)), Span::raw(format!("{} {}", group(&t.credit_limit_usdc.to_string()), t.currency))]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![key("↑/↓"), Span::raw(" field  "), key("f"), Span::raw(" Fund  "), key("x"), Span::raw(" Refund  "), key("s"), Span::raw(" Refresh")]));
     f.render_widget(Paragraph::new(lines).block(panel("Buyer")).wrap(Wrap { trim: true }), area);
 }
 
 fn render_seller(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(area);
 
-    // Left: document inputs + the live rule checklist.
+    // Left: document inputs + derived amount + the live rule checklist.
     let mut left: Vec<Line> = vec![
         Line::from(vec![Span::styled("Role: ", Style::default().fg(DIM)), Span::styled(format!("SELLER · {}", app.cfg.terms.seller), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))]),
-        Line::from(""),
     ];
-    for (i, label) in FIELDS.iter().enumerate() {
-        let focused = i == app.field_idx;
-        let val = &app.fields[i];
+    for (i, label) in SELLER_FIELDS.iter().enumerate() {
+        let focused = i == app.seller_idx;
+        let val = &app.seller_fields[i];
         let val_span = if focused {
             Span::styled(format!("{val}▏"), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
         } else {
@@ -154,83 +161,105 @@ fn render_seller(f: &mut Frame, app: &App, area: Rect) {
         };
         left.push(Line::from(vec![
             Span::styled(if focused { "▸ " } else { "  " }, Style::default().fg(GREEN)),
-            Span::styled(format!("{label:<24}"), Style::default().fg(if focused { Color::White } else { DIM })),
+            Span::styled(format!("{label:<22}"), Style::default().fg(if focused { Color::White } else { DIM })),
             val_span,
         ]));
     }
-    left.push(Line::from(""));
-    let amount: Option<u64> = app.fields[0].trim().parse().ok();
-    let ship = util::ymd_to_unix(&app.fields[1]).ok();
-    let balance: Option<u64> = app.fields[2].trim().parse().ok();
-    let limit = app.cfg.terms.credit_limit_usdc;
-    let deadline = app.cfg.terms.shipment_deadline_unix;
-    left.push(Line::from(Span::styled("Rules enforced in the zkVM guest:", Style::default().fg(DIM))));
-    left.push(rule("amount ≤ credit limit", amount.map(|a| a <= limit)));
-    left.push(rule("ship date ≤ deadline", ship.map(|s| s <= deadline)));
-    left.push(rule("seller ∈ approved set", Some(true)));
-    left.push(rule("buyer balance ≥ amount", match (balance, amount) { (Some(b), Some(a)) => Some(b >= a), _ => None }));
-    left.push(rule("issuer ed25519 signature", Some(true)));
+    let amount = app.derived_amount();
+    left.push(Line::from(vec![
+        Span::styled("  = invoice amount     ", Style::default().fg(DIM)),
+        Span::styled(amount.map(|a| group(&a.to_string())).unwrap_or_else(|| "?".into()), Style::default().fg(BLUE).add_modifier(Modifier::BOLD)),
+    ]));
     f.render_widget(Paragraph::new(left).block(panel("Seller · documents")), cols[0]);
 
-    // Right: proof output / live progress + controls.
-    let proving = app.busy.as_deref() == Some("prove");
+    // Right: rule checklist + proof / live progress + controls.
+    let ship = util::ymd_to_unix(&app.seller_fields[2]).ok();
+    let balance: Option<u64> = app.buyer_fields[1].trim().parse().ok();
+    let limit = app.cfg.terms.credit_limit_usdc;
+    let deadline = app.cfg.terms.shipment_deadline_unix;
+    let cur_match = app.seller_fields[3].trim().eq_ignore_ascii_case(app.cfg.terms.currency.trim());
+
     let mut right: Vec<Line> = Vec::new();
+    let proving = app.busy.as_deref() == Some("prove");
     if proving {
-        let elapsed = app.elapsed_secs().unwrap_or(0);
+        let e = app.elapsed_secs().unwrap_or(0);
         right.push(Line::from(vec![
             Span::styled(format!("{} proving… ", app.spinner()), Style::default().fg(GREEN)),
-            Span::styled(format!("{}:{:02}", elapsed / 60, elapsed % 60), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{}:{:02}", e / 60, e % 60), Style::default().fg(GREEN).add_modifier(Modifier::BOLD)),
         ]));
-        right.push(Line::from(Span::styled("real Groth16 in the RISC Zero zkVM + Docker wrap", Style::default().fg(DIM))));
-        right.push(Line::from(""));
+        right.push(Line::from(Span::styled("real Groth16 in the zkVM + Docker wrap", Style::default().fg(DIM))));
         if let Some(p) = &app.proof_progress {
-            right.push(Line::from(Span::styled(trunc_n(p, 46), Style::default().fg(BLUE))));
+            right.push(Line::from(Span::styled(trunc_n(p, 40), Style::default().fg(BLUE))));
         }
     } else if let Some(p) = &app.proof {
-        right.push(Line::from(vec![Span::styled("Real Groth16 proof", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))]));
-        right.push(Line::from(""));
-        right.push(field("lc_id", &p.lc_id));
-        right.push(field("terms_digest", &trunc(&p.terms_digest)));
-        right.push(field("disclosure_cmt", &trunc(&p.disclosure_cmt)));
+        right.push(Line::from(Span::styled("Proof ready", Style::default().fg(GREEN).add_modifier(Modifier::BOLD))));
+        right.push(field("seal", &trunc(&p.seal)));
         right.push(field("journal", &trunc(&p.journal)));
-        right.push(Line::from(vec![Span::styled("seal          ", Style::default().fg(DIM)), Span::styled(trunc(&p.seal), Style::default().fg(GREEN).add_modifier(Modifier::BOLD))]));
-        let (msg, color) = if p.seal.starts_with("73c457ba") {
-            ("✓ selector 73c457ba — verifiable on-chain", GREEN)
-        } else {
-            ("⚠ unexpected seal selector", RED)
-        };
-        right.push(Line::from(Span::styled(msg, Style::default().fg(color))));
+        let ok = p.seal.starts_with("73c457ba");
+        right.push(Line::from(Span::styled(
+            if ok { "✓ selector 73c457ba (on-chain verifiable)" } else { "⚠ unexpected selector" },
+            Style::default().fg(if ok { GREEN } else { RED }),
+        )));
     } else {
-        right.push(Line::from(Span::styled("No proof yet.", Style::default().fg(DIM))));
-        right.push(Line::from(Span::styled("Type the documents, then press [p].", Style::default().fg(DIM))));
+        right.push(Line::from(Span::styled("Rules enforced in the zkVM:", Style::default().fg(DIM))));
+        right.push(rule("amount = qty × unit_price", Some(amount.is_some())));
+        right.push(rule("amount ≤ credit limit", amount.map(|a| a <= limit)));
+        right.push(rule("ship date ≤ deadline", ship.map(|s| s <= deadline)));
+        right.push(rule("currency = LC currency", Some(cur_match)));
+        right.push(rule("seller ∈ approved set", Some(true)));
+        right.push(rule("origin ∈ allowed set", Some(true)));
+        right.push(rule("buyer balance ≥ amount", match (balance, amount) { (Some(b), Some(a)) => Some(b >= a), _ => None }));
+        right.push(rule("issuer ed25519 signature", Some(true)));
     }
     right.push(Line::from(""));
-    right.push(Line::from(vec![key("↑/↓"), Span::raw(" field  "), key("p"), Span::raw(" prove  "), key("r"), Span::raw(" release")]));
+    right.push(Line::from(vec![key("↑/↓"), Span::raw(" field  "), key("Enter"), Span::raw(" prove  "), key("^R"), Span::raw(" release")]));
     f.render_widget(Paragraph::new(right).block(panel("Seller · proof")).wrap(Wrap { trim: true }), cols[1]);
 }
 
 fn render_auditor(f: &mut Frame, app: &App, area: Rect) {
+    // Profile selector header.
+    let mut header: Vec<Span> = vec![Span::styled("Profile:  ", Style::default().fg(DIM))];
+    for (i, p) in PROFILES.iter().enumerate() {
+        let sel = i == app.audit_profile;
+        header.push(Span::styled(
+            format!(" {p} "),
+            if sel { Style::default().fg(Color::Black).bg(GREEN).add_modifier(Modifier::BOLD) } else { Style::default().fg(DIM) },
+        ));
+        header.push(Span::raw(" "));
+    }
+
     let mut lines = vec![
         Line::from(vec![Span::styled("Role: ", Style::default().fg(DIM)), Span::styled("AUDITOR", Style::default().fg(BLUE).add_modifier(Modifier::BOLD))]),
         Line::from(""),
-        Line::from("The invoice amount never went on-chain. The auditor holds the"),
-        Line::from("view key, opens the disclosure, and checks it matches the"),
-        Line::from("commitment the escrow recorded."),
+        Line::from("Selective disclosure: only the fields this profile is entitled"),
+        Line::from("to see are revealed; the rest stay hidden but committed."),
+        Line::from(""),
+        Line::from(header),
         Line::from(""),
     ];
     if let Some(d) = &app.disclosure {
-        lines.push(field("invoice amount", &group(&d.amount)));
-        lines.push(field("buyer balance", &group(&d.balance)));
-        lines.push(field("ship date (unix)", &d.ship_date));
-        lines.push(field("buyer_id", &trunc(&d.buyer_id)));
-        lines.push(field("seller_id", &trunc(&d.seller_id)));
-        lines.push(field("commitment", &trunc(&d.commitment)));
-        lines.push(Line::from(Span::styled("must equal escrow.disclosure() on-chain", Style::default().fg(DIM))));
+        lines.push(dfield("invoice amount", &d.amount));
+        lines.push(dfield("quantity", &d.quantity));
+        lines.push(dfield("unit price", &d.unit_price));
+        lines.push(dfield("currency", &d.currency));
+        lines.push(dfield("buyer_id", &d.buyer_id));
+        lines.push(dfield("seller_id", &d.seller_id));
+        lines.push(dfield("ship date", &d.ship_date));
+        lines.push(dfield("origin id", &d.origin_id));
+        lines.push(dfield("bol number", &d.bol_number));
+        lines.push(dfield("carrier id", &d.carrier_id));
+        lines.push(dfield("buyer balance", &d.balance));
+        let m = d.commitment_match.to_lowercase();
+        let (txt, c) = if m.starts_with("yes") { ("✓ matches on-chain commitment", GREEN) }
+            else if m.starts_with("no") { ("✗ does NOT match on-chain commitment", RED) }
+            else { ("commitment match: n/a", DIM) };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(txt, Style::default().fg(c).add_modifier(Modifier::BOLD))));
     } else {
         lines.push(Line::from(Span::styled("Disclosure not opened yet.", Style::default().fg(DIM))));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![key("a"), Span::raw(" Decrypt disclosure")]));
+    lines.push(Line::from(vec![key("←/→"), Span::raw(" profile  "), key("a"), Span::raw(" Decrypt disclosure")]));
     f.render_widget(Paragraph::new(lines).block(panel("Auditor")).wrap(Wrap { trim: true }), area);
 }
 
@@ -299,30 +328,29 @@ fn render_confirm(f: &mut Frame, p: Pending) {
 }
 
 fn render_help(f: &mut Frame) {
-    let area = centered_rect(60, 70, f.area());
+    let area = centered_rect(64, 80, f.area());
     f.render_widget(Clear, area);
-    let row = |k: &'static str, d: &'static str| Line::from(vec![Span::styled(format!("  {k:<10}"), Style::default().fg(GREEN)), Span::styled(d, Style::default().fg(Color::White))]);
+    let row = |k: &'static str, d: &'static str| Line::from(vec![Span::styled(format!("  {k:<12}"), Style::default().fg(GREEN)), Span::styled(d, Style::default().fg(Color::White))]);
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled("  Global", Style::default().fg(BLUE).add_modifier(Modifier::BOLD))),
         row("Tab", "switch role (Buyer / Seller / Auditor)"),
-        row("?", "toggle this help"),
-        row("Esc / q", "quit"),
+        row("?", "toggle this help     Esc/Ctrl+C  quit"),
         Line::from(""),
         Line::from(Span::styled("  Buyer", Style::default().fg(BLUE).add_modifier(Modifier::BOLD))),
-        row("0-9", "edit fund amount"),
-        row("f", "fund the escrow"),
-        row("x", "refund remainder to buyer"),
-        row("s", "refresh on-chain status"),
+        row("↑/↓", "select field (fund amount / balance)"),
+        row("0-9", "edit the focused field"),
+        row("f / x / s", "fund / refund / refresh status"),
         Line::from(""),
         Line::from(Span::styled("  Seller", Style::default().fg(BLUE).add_modifier(Modifier::BOLD))),
         row("↑/↓", "move between document fields"),
         row("type", "edit the focused field"),
-        row("p / Enter", "generate real Groth16 proof"),
-        row("r", "release escrow with the proof"),
+        row("Enter", "generate real Groth16 proof"),
+        row("Ctrl+R", "release escrow with the proof"),
         Line::from(""),
         Line::from(Span::styled("  Auditor", Style::default().fg(BLUE).add_modifier(Modifier::BOLD))),
-        row("a", "decrypt the disclosure"),
+        row("←/→", "switch disclosure profile"),
+        row("a", "decrypt + verify commitment match"),
         Line::from(""),
         Line::from(Span::styled("  press any key to close", Style::default().fg(DIM))).alignment(Alignment::Center),
     ];
@@ -364,6 +392,20 @@ fn field(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
+/// Disclosure field: dims + italicises hidden values so the withheld set is clear.
+fn dfield(label: &str, value: &str) -> Line<'static> {
+    let hidden = value.starts_with("hidden");
+    let vstyle = if hidden {
+        Style::default().fg(DIM).add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    Line::from(vec![
+        Span::styled(format!("  {label:<14}"), Style::default().fg(DIM)),
+        Span::styled(trunc_n(value, 40), vstyle),
+    ])
+}
+
 fn rule(label: &str, ok: Option<bool>) -> Line<'static> {
     let (mark, color) = match ok {
         Some(true) => ("✔", GREEN),
@@ -377,7 +419,7 @@ fn rule(label: &str, ok: Option<bool>) -> Line<'static> {
 }
 
 fn trunc(s: &str) -> String {
-    trunc_n(s, 24)
+    trunc_n(s, 22)
 }
 
 fn trunc_n(s: &str, n: usize) -> String {

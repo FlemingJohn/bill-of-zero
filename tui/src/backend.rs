@@ -15,16 +15,30 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::Config;
 
-/// Seller's document inputs (what the user types on the Seller tab).
+/// Document inputs. The seller owns the trade-document fields; `buyer_balance`
+/// is the buyer's own private figure (entered on the Buyer tab). `amount` is
+/// derived as quantity * unit_price.
 #[derive(Debug, Clone)]
 pub struct DocInput {
-    pub amount_usdc: u64,
+    pub quantity: u64,
+    pub unit_price: u64,
     pub ship_date_unix: u64,
+    pub currency: String,
+    pub origin: String,
+    pub bol_number: u64,
+    pub carrier: String,
     pub buyer_balance_usdc: u64,
+}
+
+impl DocInput {
+    pub fn amount(&self) -> u64 {
+        self.quantity.saturating_mul(self.unit_price)
+    }
 }
 
 /// Parsed result of a successful proof.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // some fields are retained for reference / future panels
 pub struct Proof {
     pub lc_id: String,
     pub terms_digest: String,
@@ -39,15 +53,26 @@ pub struct TxResult {
     pub hash: Option<String>,
 }
 
-/// Decoded auditor disclosure (from `host audit`).
+/// Decoded auditor disclosure (from `host audit`). Hidden fields carry the
+/// literal "hidden (committed)" so the UI can show what the profile withholds.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // commitment kept for reference; UI shows the match result
 pub struct Disclosure {
+    pub profile: String,
     pub amount: String,
-    pub balance: String,
-    pub ship_date: String,
+    pub quantity: String,
+    pub unit_price: String,
+    pub currency: String,
     pub buyer_id: String,
     pub seller_id: String,
+    pub ship_date: String,
+    pub origin_id: String,
+    pub bol_number: String,
+    pub carrier_id: String,
+    pub balance: String,
     pub commitment: String,
+    /// "yes" / "no" / "n/a …"
+    pub commitment_match: String,
 }
 
 /// Generate a real Groth16 proof (selector 73c457ba). Takes minutes; `progress`
@@ -114,27 +139,45 @@ pub fn prove(cfg: &Config, input: &DocInput, progress: &dyn Fn(String)) -> Resul
     })
 }
 
-/// Decrypt and recompute the auditor disclosure written by the last proof.
-pub fn audit(cfg: &Config) -> Result<Disclosure> {
-    let out = Command::new("cargo")
-        .current_dir(&cfg.root)
+/// Decrypt the disclosure for a given auditor `profile` (tax / regulator / full)
+/// and, if `expected` is the on-chain commitment, verify the match.
+pub fn audit(cfg: &Config, profile: &str, expected: Option<&str>) -> Result<Disclosure> {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&cfg.root)
         .args(["run", "--release", "--quiet", "--bin", "host", "--", "audit"])
         .arg(cfg.root.join("sample_data/disclosure.bin"))
-        .output()
-        .context("failed to launch `host audit`")?;
+        .arg(profile);
+    if let Some(e) = expected {
+        cmd.arg(e);
+    }
+    let out = cmd.output().context("failed to launch `host audit`")?;
     if !out.status.success() {
         bail!("audit failed:\n{}", tail(&String::from_utf8_lossy(&out.stderr), 800));
     }
     let f = parse_kv(&String::from_utf8_lossy(&out.stdout));
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     Ok(Disclosure {
+        profile: profile.to_string(),
         amount: get("invoice amount"),
-        balance: get("buyer escrow balance"),
-        ship_date: get("shipment date (unix)"),
+        quantity: get("quantity"),
+        unit_price: get("unit price"),
+        currency: get("currency"),
         buyer_id: get("invoice buyer_id"),
         seller_id: get("invoice seller_id"),
+        ship_date: get("shipment date (unix)"),
+        origin_id: get("country of origin id"),
+        bol_number: get("bill-of-lading number"),
+        carrier_id: get("carrier id"),
+        balance: get("buyer escrow balance"),
         commitment: get("disclosure_commitment").split_whitespace().next().unwrap_or("").to_string(),
+        commitment_match: get("commitment match"),
     })
+}
+
+/// Read the escrow's recorded disclosure commitment (hex), if any (read-only).
+pub fn escrow_disclosure(cfg: &Config, source: &str) -> Option<String> {
+    let (out, err) = invoke_raw(cfg, source, &cfg.deployment.escrow, true, &["disclosure"]).ok()?;
+    find_hash(&format!("{out}\n{err}"))
 }
 
 /// `is_released()` on the escrow (read-only).
@@ -213,12 +256,18 @@ fn build_docs_json(cfg: &Config, i: &DocInput) -> String {
     let seller = &cfg.terms.seller;
     format!(
         r#"{{
-  "invoice": {{ "amount_usdc": {amount}, "buyer": {buyer:?}, "seller": {seller:?}, "currency": "USDC" }},
-  "bill_of_lading": {{ "ship_date_unix": {ship}, "buyer": {buyer:?}, "seller": {seller:?}, "goods": "5000x precision optical lenses" }},
+  "invoice": {{ "amount_usdc": {amount}, "quantity": {qty}, "unit_price": {price}, "buyer": {buyer:?}, "seller": {seller:?}, "currency": {currency:?} }},
+  "bill_of_lading": {{ "ship_date_unix": {ship}, "buyer": {buyer:?}, "seller": {seller:?}, "origin": {origin:?}, "bol_number": {bol}, "carrier": {carrier:?} }},
   "buyer_balance_usdc": {balance}
 }}"#,
-        amount = i.amount_usdc,
+        amount = i.amount(),
+        qty = i.quantity,
+        price = i.unit_price,
+        currency = i.currency,
         ship = i.ship_date_unix,
+        origin = i.origin,
+        bol = i.bol_number,
+        carrier = i.carrier,
         balance = i.buyer_balance_usdc,
     )
 }

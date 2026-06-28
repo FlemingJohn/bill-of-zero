@@ -17,8 +17,11 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use bz_core::{
-    disclosure_commitment, disclosure_preimage, doc_digest, hash_pair, id_from_name, merkle_root,
-    terms_digest, BillOfLading, DocumentSet, Invoice, LcTerms, MerkleProof, TREE_DEPTH,
+    commitment_from_fields, disclosure_commitment, disclosure_opening,
+    field_commitments_from_opening, doc_digest, hash_pair, id_from_name, merkle_root, terms_digest,
+    BillOfLading, DocumentSet, Invoice, LcTerms, MerkleProof, DISCLOSURE_OPENING_LEN, F_AMOUNT,
+    F_BOL_NUMBER, F_BUYER_BALANCE, F_BUYER_ID, F_CARRIER_ID, F_CURRENCY, F_ORIGIN_ID, F_QUANTITY,
+    F_SELLER_ID, F_SHIP_DATE, F_UNIT_PRICE, TREE_DEPTH,
 };
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
@@ -86,30 +89,90 @@ fn decrypt_as_auditor(blob: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| anyhow::anyhow!("disclosure decryption/authentication failed"))
 }
 
-/// `host audit <disclosure.bin>` — decrypt and recompute the commitment so the
-/// auditor can match it against the escrow's on-chain `disclosure()` value.
-fn run_audit(path: &str) -> Result<()> {
+/// Human-readable name for an ISO-4217 numeric currency code.
+fn currency_name(code: u32) -> &'static str {
+    match code {
+        840 => "USD/USDC",
+        978 => "EUR",
+        826 => "GBP",
+        392 => "JPY",
+        156 => "CNY",
+        _ => "?",
+    }
+}
+
+/// Field indices a given auditor profile is entitled to reveal. Everything else
+/// stays hidden (only its commitment is known), which is what makes disclosure
+/// selective rather than all-or-nothing.
+fn profile_fields(profile: &str) -> Vec<u8> {
+    match profile {
+        "tax" => vec![F_AMOUNT, F_CURRENCY, F_QUANTITY, F_UNIT_PRICE],
+        "regulator" => vec![F_BUYER_ID, F_SELLER_ID, F_ORIGIN_ID, F_AMOUNT, F_CURRENCY],
+        _ => (0u8..11).collect(), // "full"
+    }
+}
+
+/// `host audit <disclosure.bin> [profile] [expected_commitment_hex]` — decrypt
+/// the opening, recompute the commitment, verify it matches the on-chain value
+/// (if given), and reveal only the fields the profile is entitled to.
+fn run_audit(path: &str, profile: &str, expected: Option<&str>) -> Result<()> {
     let blob = std::fs::read(path).with_context(|| format!("reading {path}"))?;
     let pt = decrypt_as_auditor(&blob)?;
-    if pt.len() != bz_core::DISCLOSURE_PREIMAGE_LEN {
+    if pt.len() != DISCLOSURE_OPENING_LEN {
         bail!("unexpected disclosure length: {}", pt.len());
     }
-    let amount = u64::from_le_bytes(pt[0..8].try_into().unwrap());
-    let ship_date = u64::from_le_bytes(pt[72..80].try_into().unwrap());
-    let balance = u64::from_le_bytes(pt[144..152].try_into().unwrap());
-    let commitment = Sha256::digest(&pt);
+    let mut o = [0u8; DISCLOSURE_OPENING_LEN];
+    o.copy_from_slice(&pt);
 
-    println!("=== Bill of Zero — auditor disclosure ===");
-    println!("invoice amount        : {amount}");
-    println!("buyer escrow balance  : {balance}");
-    println!("shipment date (unix)  : {ship_date}");
-    println!("invoice buyer_id      : {}", hex::encode(&pt[8..40]));
-    println!("invoice seller_id     : {}", hex::encode(&pt[40..72]));
+    // Recompute the commitment from the opening alone.
+    let commitment = commitment_from_fields(&field_commitments_from_opening(&o));
+    let commitment_hex = hex::encode(commitment);
+
+    let reveal = profile_fields(profile);
+    let shown = |idx: u8| reveal.contains(&idx);
+    let u64at = |off: usize| u64::from_le_bytes(o[off..off + 8].try_into().unwrap());
+    let u32at = |off: usize| u32::from_le_bytes(o[off..off + 4].try_into().unwrap());
+    let hex_field = |a: usize, b: usize| hex::encode(&o[a..b]);
+    let h = |idx: u8, shown_val: String| if shown(idx) { shown_val } else { "hidden (committed)".to_string() };
+
+    println!("=== Bill of Zero — auditor disclosure (profile: {profile}) ===");
+    println!("invoice amount        : {}", h(F_AMOUNT, u64at(0).to_string()));
+    println!("quantity              : {}", h(F_QUANTITY, u64at(8).to_string()));
+    println!("unit price            : {}", h(F_UNIT_PRICE, u64at(16).to_string()));
     println!(
-        "disclosure_commitment : {}  (must equal escrow.disclosure())",
-        hex::encode(commitment)
+        "currency              : {}",
+        h(F_CURRENCY, format!("{} ({})", u32at(24), currency_name(u32at(24))))
     );
+    println!("invoice buyer_id      : {}", h(F_BUYER_ID, hex_field(28, 60)));
+    println!("invoice seller_id     : {}", h(F_SELLER_ID, hex_field(60, 92)));
+    println!("shipment date (unix)  : {}", h(F_SHIP_DATE, u64at(92).to_string()));
+    println!("country of origin id  : {}", h(F_ORIGIN_ID, hex_field(100, 132)));
+    println!("bill-of-lading number : {}", h(F_BOL_NUMBER, u64at(132).to_string()));
+    println!("carrier id            : {}", h(F_CARRIER_ID, hex_field(140, 172)));
+    println!("buyer escrow balance  : {}", h(F_BUYER_BALANCE, u64at(172).to_string()));
+    println!("disclosure_commitment : {commitment_hex}");
+
+    match expected {
+        Some(exp) => {
+            let exp = exp.trim().trim_start_matches("0x").to_lowercase();
+            let ok = exp == commitment_hex;
+            println!("commitment match      : {}", if ok { "yes" } else { "no" });
+        }
+        None => println!("commitment match      : n/a (pass escrow.disclosure() to verify)"),
+    }
     Ok(())
+}
+
+/// Map a currency label (or numeric string) to its ISO-4217 numeric code.
+fn currency_code(s: &str) -> u64 {
+    match s.trim().to_uppercase().as_str() {
+        "USD" | "USDC" => 840,
+        "EUR" | "EURC" => 978,
+        "GBP" => 826,
+        "JPY" => 392,
+        "CNY" => 156,
+        other => other.parse().unwrap_or(840),
+    }
 }
 
 #[derive(Deserialize)]
@@ -119,13 +182,25 @@ struct LcTermsJson {
     shipment_deadline_unix: u64,
     buyer: String,
     seller: String,
+    #[serde(default = "default_currency")]
+    currency: String,
+}
+
+fn default_currency() -> String {
+    "USDC".to_string()
 }
 
 #[derive(Deserialize)]
 struct InvoiceJson {
     amount_usdc: u64,
+    #[serde(default)]
+    quantity: u64,
+    #[serde(default)]
+    unit_price: u64,
     buyer: String,
     seller: String,
+    #[serde(default = "default_currency")]
+    currency: String,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +208,20 @@ struct BolJson {
     ship_date_unix: u64,
     buyer: String,
     seller: String,
+    #[serde(default = "default_origin")]
+    origin: String,
+    #[serde(default)]
+    bol_number: u64,
+    #[serde(default = "default_carrier")]
+    carrier: String,
+}
+
+fn default_origin() -> String {
+    "China".to_string()
+}
+
+fn default_carrier() -> String {
+    "Maersk".to_string()
 }
 
 #[derive(Deserialize)]
@@ -183,13 +272,16 @@ fn main() -> Result<()> {
 
     let mut args = std::env::args().skip(1);
 
-    // Subcommand: `host audit <disclosure.bin>` runs the auditor view-key path.
+    // Subcommand: `host audit <disclosure.bin> [profile] [expected_commitment]`
+    // runs the granular auditor view-key path.
     let first = args.next();
     if first.as_deref() == Some("audit") {
         let path = args
             .next()
             .unwrap_or_else(|| "sample_data/disclosure.bin".into());
-        return run_audit(&path);
+        let profile = args.next().unwrap_or_else(|| "full".into());
+        let expected = args.next();
+        return run_audit(&path, &profile, expected.as_deref());
     }
 
     let terms_path = PathBuf::from(first.unwrap_or_else(|| "sample_data/lc_terms.json".into()));
@@ -231,8 +323,39 @@ fn main() -> Result<()> {
         bail!("internal error: constructed Merkle proof does not match root");
     }
 
+    // --- Allowed-origin tree + the goods' origin proof --------------------
+    let origins_path = PathBuf::from("sample_data/approved_origins.json");
+    let origin_names: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(&origins_path)
+            .with_context(|| format!("reading {}", origins_path.display()))?,
+    )?;
+    let origin_leaves: Vec<[u8; 32]> = origin_names.iter().map(|n| id_from_name(n)).collect();
+    let origin_levels = build_tree(origin_leaves.clone());
+    let origins_root = origin_levels.last().unwrap()[0];
+
+    let origin_id = id_from_name(&d.bill_of_lading.origin);
+    let origin_idx = origin_leaves
+        .iter()
+        .position(|l| *l == origin_id)
+        .with_context(|| {
+            format!("origin '{}' is not in the allowed-origin list", d.bill_of_lading.origin)
+        })?;
+    let origin_merkle = proof_for(&origin_levels, origin_idx);
+
+    // Derive quantity/unit_price: use given values, else split the amount into
+    // one line item so amount == quantity * unit_price always holds.
+    let (quantity, unit_price) = if d.invoice.quantity > 0 && d.invoice.unit_price > 0 {
+        (d.invoice.quantity, d.invoice.unit_price)
+    } else {
+        (1, d.invoice.amount_usdc)
+    };
+    let currency = currency_code(&d.invoice.currency) as u32;
+
     let invoice = Invoice {
         amount: d.invoice.amount_usdc,
+        quantity,
+        unit_price,
+        currency,
         buyer_id: id_from_name(&d.invoice.buyer),
         seller_id: id_from_name(&d.invoice.seller),
     };
@@ -240,6 +363,9 @@ fn main() -> Result<()> {
         ship_date: d.bill_of_lading.ship_date_unix,
         buyer_id: id_from_name(&d.bill_of_lading.buyer),
         seller_id: id_from_name(&d.bill_of_lading.seller),
+        origin_id,
+        bol_number: d.bill_of_lading.bol_number,
+        carrier_id: id_from_name(&d.bill_of_lading.carrier),
     };
 
     // --- Feature 4: the issuer signs the documents ------------------------
@@ -257,9 +383,11 @@ fn main() -> Result<()> {
         lc_id: t.lc_id,
         credit_limit: t.credit_limit_usdc,
         deadline: t.shipment_deadline_unix,
+        currency: currency_code(&t.currency) as u32,
         buyer_id: id_from_name(&t.buyer),
         seller_id,
         approved_root,
+        origins_root,
         issuer_pubkey,
         auditor_pubkey: auditor_pubkey(),
     };
@@ -268,15 +396,16 @@ fn main() -> Result<()> {
         bill_of_lading,
         buyer_balance: d.buyer_balance_usdc,
         seller_merkle,
+        origin_merkle,
         issuer_sig,
         disclosure_blinding: DISCLOSURE_BLINDING,
     };
 
     // --- Feature 5: encrypt the disclosure to the auditor (off-chain) ------
     // The guest commits disclosure_commitment(docs) into the journal; here we
-    // encrypt the matching preimage so the auditor can later open it and prove
-    // it equals what settled on-chain.
-    let blob = encrypt_to_auditor(&terms.auditor_pubkey, &disclosure_preimage(&docs));
+    // encrypt the matching per-field opening so the auditor can later open any
+    // entitled subset and prove it equals what settled on-chain.
+    let blob = encrypt_to_auditor(&terms.auditor_pubkey, &disclosure_opening(&docs));
     std::fs::write("sample_data/disclosure.bin", &blob)
         .context("writing sample_data/disclosure.bin")?;
 
@@ -307,6 +436,7 @@ fn main() -> Result<()> {
     println!("\n=== Bill of Zero — proof generated ===");
     println!("lc_id          : {}", terms.lc_id);
     println!("approved_root  : {}", hex::encode(approved_root));
+    println!("origins_root   : {}", hex::encode(origins_root));
     println!("issuer_pubkey  : {}", hex::encode(terms.issuer_pubkey));
     println!("auditor_pubkey : {}", hex::encode(terms.auditor_pubkey));
     println!("image_id       : {}", hex::encode(image_id.as_bytes()));

@@ -32,8 +32,14 @@ pub struct LcTerms {
     pub lc_id: u64,
     pub credit_limit_usdc: u64,
     pub shipment_deadline_unix: u64,
+    #[serde(default = "default_currency")]
+    pub currency: String,
     pub buyer: String,
     pub seller: String,
+}
+
+fn default_currency() -> String {
+    "USDC".to_string()
 }
 
 /// Everything the TUI loads at startup, plus the project root it was found in.

@@ -1,6 +1,8 @@
 {
   "invoice": {
     "amount_usdc": 95000,
+    "quantity": 5000,
+    "unit_price": 19,
     "buyer": "ACME Imports LLC",
     "seller": "Shenzhen Optics Co",
     "currency": "USDC"
@@ -9,7 +11,9 @@
     "ship_date_unix": 1735603200,
     "buyer": "ACME Imports LLC",
     "seller": "Shenzhen Optics Co",
-    "goods": "5000x precision optical lenses"
+    "origin": "China",
+    "bol_number": 778412,
+    "carrier": "Maersk Line"
   },
   "buyer_balance_usdc": 150000
 }
