@@ -31,6 +31,12 @@ pub struct Config {
     pub token: Address,
     /// The beneficiary that receives funds on a valid presentation.
     pub seller: Address,
+    /// The applicant: funds the LC and reclaims any remainder / cancels on expiry.
+    pub buyer: Address,
+    /// LC expiry (unix seconds). After this, if still unreleased, the buyer may
+    /// cancel and refund the full balance. Before it, only the seller (via proof)
+    /// can move funds.
+    pub expiry: u64,
 }
 
 #[contracttype]
@@ -56,6 +62,8 @@ impl EscrowContract {
         router: Address,
         token: Address,
         seller: Address,
+        buyer: Address,
+        expiry: u64,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic!("already initialized");
@@ -67,6 +75,8 @@ impl EscrowContract {
             router,
             token,
             seller,
+            buyer,
+            expiry,
         };
         env.storage().instance().set(&DataKey::Config, &cfg);
         env.storage().instance().set(&DataKey::Released, &false);
@@ -127,17 +137,45 @@ impl EscrowContract {
             panic!("journal terms digest does not match this LC");
         }
 
-        // 4. Settle: release the proven amount to the seller.
+        // 4. Effects before interactions (reentrancy-safe): mark released and
+        //    record the disclosure commitment BEFORE the external token call, so
+        //    a hookable token cannot re-enter release() and settle twice. If the
+        //    transfer below panics (e.g. under-funded), the whole tx reverts and
+        //    these writes roll back with it.
+        env.storage().instance().set(&DataKey::Released, &true);
+        env.storage().instance().set(&DataKey::Disclosure, &disclosure);
+
+        // 5. Settle: release the proven amount to the seller. Any remainder
+        //    stays in the escrow for the buyer to reclaim via refund().
         token::Client::new(&env, &cfg.token).transfer(
             &env.current_contract_address(),
             &cfg.seller,
             &(release_amount as i128),
         );
-        env.storage().instance().set(&DataKey::Released, &true);
+    }
 
-        // 5. Record the disclosure commitment so an auditor can later confirm
-        //    an off-chain document disclosure matches what actually settled.
-        env.storage().instance().set(&DataKey::Disclosure, &disclosure);
+    /// Refund the escrow's remaining balance to the buyer.
+    ///
+    /// Two legitimate cases:
+    ///   - AFTER release: the buyer reclaims the unused remainder (funded amount
+    ///     minus the proven invoice amount paid to the seller).
+    ///   - BEFORE release: only once the LC has expired — the seller failed to
+    ///     present a valid proof in time, so the buyer cancels and reclaims the
+    ///     full balance. Before expiry this is rejected so the seller keeps a
+    ///     fair presentation window (no fund-then-yank griefing).
+    pub fn refund(env: Env) {
+        let cfg = Self::config(&env);
+        cfg.buyer.require_auth();
+
+        if !Self::is_released(env.clone()) && env.ledger().timestamp() <= cfg.expiry {
+            panic!("LC not expired; seller may still present a valid proof");
+        }
+
+        let token = token::Client::new(&env, &cfg.token);
+        let balance = token.balance(&env.current_contract_address());
+        if balance > 0 {
+            token.transfer(&env.current_contract_address(), &cfg.buyer, &balance);
+        }
     }
 
     /// View: the disclosure commitment of the settled proof (feature 5), if any.
