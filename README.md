@@ -10,13 +10,23 @@ Bill of Zero settles international trade payments **privately**. A buyer locks m
 
 It's a **Letter of Credit** (how banks finance global trade today) reimagined: the bank's slow, manual, days-long document check is replaced by a **zero-knowledge proof verified on-chain in seconds**, and the sensitive commercial details never become public.
 
-## Proven live on Stellar testnet — not a mockup
+## Proven live on Stellar testnet — verify it yourself
 
-A real proof was generated and **verified inside the Stellar smart contract**, and real funds moved:
+This is not a mockup. A real proof was generated and **verified inside the Stellar smart contract**, and real funds moved. Click any address to inspect it on Stellar Expert.
 
-- **Settlement transaction:** [`31e6198a…`](https://stellar.expert/explorer/testnet/tx/31e6198a7e6455b96f4605f13b686d90d1df68d6f1ce1c1afa28c97f441bdefe) — the contract verified the proof on-chain and paid the seller 95,000.
-- The zero-knowledge proof is checked **inside the Soroban contract** (load-bearing, not faked or off-chain).
-- Live contracts: escrow `CDVLQX43…SOXS3YE`, proof verifier `CCKHZZY5…` on Stellar testnet.
+**The settlement transaction:** [`31e6198a…`](https://stellar.expert/explorer/testnet/tx/31e6198a7e6455b96f4605f13b686d90d1df68d6f1ce1c1afa28c97f441bdefe) — the escrow verified the zero-knowledge proof on-chain and transferred **95,000 to the seller**. Open it and you'll see the proof verification and the `transfer` event in one transaction.
+
+| Contract / account | Address (Stellar testnet) |
+| --- | --- |
+| **Escrow** (holds funds, verifies the proof, releases) | [`CDVLQX43…SOXS3YE`](https://stellar.expert/explorer/testnet/contract/CDVLQX43SC3FVCLO42AZW34O5AK35CMQBGJRBEA7C6V6RPNTYSOXS3YE) |
+| **Proof verifier router** (Nethermind RISC Zero) | [`CDA5J4P2…N5BTU`](https://stellar.expert/explorer/testnet/contract/CDA5J4P2VYDTBFZTDV6Y3YX3C3WKQGGCVQASOJW2FEN55DHRDGFN5BTU) |
+| **Groth16 verifier** (selector `73c457ba`) | [`CCKHZZY5…VX6F`](https://stellar.expert/explorer/testnet/contract/CCKHZZY5S532BN33GBVTDXEHRRFC4BZYEYHC65WP73YDKPPGI4T6VX6F) |
+| **Native Poseidon** (settlement receipt) | [`CDZHBSVG…BQ76Q`](https://stellar.expert/explorer/testnet/contract/CDZHBSVGGFAESS56FXKIJ4MMCSLITN5SYPNL4VZTAGLLDJXDNBQBQ76Q) |
+| **Settlement token** (USDC-style SAC) | [`CDLZFC3S…GCYSC`](https://stellar.expert/explorer/testnet/contract/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC) |
+| **Seller** account (receives payment) | [`GDERZ3SX…S6YX`](https://stellar.expert/explorer/testnet/account/GDERZ3SXYJD74D54EDSCDDXZ7YC7TTNDXFRXN3MJFAG5P44DAUP2S6YX) |
+| **Buyer** account (funds the escrow) | [`GB7AMGGO…4NTL`](https://stellar.expert/explorer/testnet/account/GB7AMGGO45LKOIUNIUIPMYFDIOC5NJP5TWYTQBEUQW7DOYG36IPH4NTL) |
+
+Proof binding (committed in the journal, pinned in the escrow): guest `image_id` = `f3626281…ffb87421`, `terms_digest` = `ae47eeb6…600dacf4`. Full set in [`deployment.json`](deployment.json).
 
 ## How it works (plain language)
 
@@ -24,6 +34,37 @@ A real proof was generated and **verified inside the Stellar smart contract**, a
 2. **Seller proves compliance, privately.** Their documents are checked against the deal's rules inside a "zero-knowledge machine." Out comes a tiny **proof** that says *"every rule passes"* — while revealing nothing about the documents. Non-compliant documents simply can't produce a proof.
 3. **The contract verifies and pays.** The seller sends that proof to the Stellar contract. The contract checks it on-chain and, **only if it's valid**, releases the money to the seller. No valid proof → no payment.
 4. **Auditors can peek, selectively.** A regulator holding a view key can later reveal *chosen* fields (say, just the amount) and prove they exactly match what settled — privacy **with** accountability.
+
+---
+
+## The example trade (what gets proved)
+
+The demo settles one concrete Letter of Credit, **LC #1001**, between two parties:
+
+**Buyer — ACME Imports LLC** (account [`GB7AMGGO…4NTL`](https://stellar.expert/explorer/testnet/account/GB7AMGGO45LKOIUNIUIPMYFDIOC5NJP5TWYTQBEUQW7DOYG36IPH4NTL)). Sets the terms of the credit and funds it.
+
+| Buyer provides | Value | Public or private |
+| --- | --- | --- |
+| Credit limit | 100,000 USDC | public (the LC cap) |
+| Shipment deadline | 2024-12-31 | public |
+| Currency | USDC | public |
+| Escrow funding | 100,000 | public (money on-chain) |
+| Own account balance | 150,000 | **private** — only "≥ credit limit" is proved |
+
+**Seller — Shenzhen Optics Co** (account [`GDERZ3SX…S6YX`](https://stellar.expert/explorer/testnet/account/GDERZ3SXYJD74D54EDSCDDXZ7YC7TTNDXFRXN3MJFAG5P44DAUP2S6YX)). Presents the shipping documents; gets paid when they prove compliance.
+
+| Seller provides | Value | Public or private |
+| --- | --- | --- |
+| Quantity | 5,000 units | **private** |
+| Unit price | 19 USDC | **private** |
+| Invoice amount (= qty × price) | 95,000 | only the **released amount** is public |
+| Shipment date | 2024-12-31 | **private** |
+| Currency | USDC | **private** |
+| Country of origin | China | **private** — only "on the allowed list" is proved |
+| Bill-of-lading no. | 778412 | **private** (disclosed to auditor) |
+| Carrier | Maersk Line | **private** (disclosed to auditor) |
+
+The proof confirms all the rules below hold over these private values; on-chain, only **LC #1001** and the **released amount (95,000)** ever appear.
 
 ---
 
