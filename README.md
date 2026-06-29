@@ -4,7 +4,26 @@
 
 <p align="center"><b>Privacy-preserving Letter-of-Credit settlement on Stellar, powered by zero-knowledge proofs.</b></p>
 
-Bill of Zero lets a buyer's bank escrow a stablecoin payment for a Letter of Credit (LC) and release it to the seller the moment a compliant set of trade documents is presented, without ever revealing those documents on-chain. A RISC Zero zero-knowledge proof attests that a private invoice and bill of lading satisfy the LC's terms, that the documents are signed by a trusted issuer, that the seller is an approved exporter, and that the buyer is good for the credit line. A Soroban smart contract verifies that proof on Stellar and releases the funds. An auditor can later open a sealed disclosure and prove it matches exactly what settled.
+## What it is
+
+Bill of Zero settles international trade payments **privately**. A buyer locks money in escrow; the seller gets paid the moment they prove their shipping documents meet the deal's terms — **without revealing the documents**. A smart contract on Stellar checks that proof and releases the money automatically, with no bank in the middle reading the paperwork.
+
+It's a **Letter of Credit** (how banks finance global trade today) reimagined: the bank's slow, manual, days-long document check is replaced by a **zero-knowledge proof verified on-chain in seconds**, and the sensitive commercial details never become public.
+
+## Proven live on Stellar testnet — not a mockup
+
+A real proof was generated and **verified inside the Stellar smart contract**, and real funds moved:
+
+- **Settlement transaction:** [`31e6198a…`](https://stellar.expert/explorer/testnet/tx/31e6198a7e6455b96f4605f13b686d90d1df68d6f1ce1c1afa28c97f441bdefe) — the contract verified the proof on-chain and paid the seller 95,000.
+- The zero-knowledge proof is checked **inside the Soroban contract** (load-bearing, not faked or off-chain).
+- Live contracts: escrow `CDVLQX43…SOXS3YE`, proof verifier `CCKHZZY5…` on Stellar testnet.
+
+## How it works (plain language)
+
+1. **Buyer funds the escrow.** Money is locked for one specific trade.
+2. **Seller proves compliance, privately.** Their documents are checked against the deal's rules inside a "zero-knowledge machine." Out comes a tiny **proof** that says *"every rule passes"* — while revealing nothing about the documents. Non-compliant documents simply can't produce a proof.
+3. **The contract verifies and pays.** The seller sends that proof to the Stellar contract. The contract checks it on-chain and, **only if it's valid**, releases the money to the seller. No valid proof → no payment.
+4. **Auditors can peek, selectively.** A regulator holding a view key can later reveal *chosen* fields (say, just the amount) and prove they exactly match what settled — privacy **with** accountability.
 
 ---
 
@@ -71,38 +90,27 @@ The bill-of-lading number and carrier are carried as disclosed-only fields (sign
 
 ```mermaid
 flowchart LR
-    subgraph OFF["Off-chain (private)"]
-        direction LR
-        TERMS["LC terms + roots + issuer key + auditor key<br/>(public commitments)"]
-        DOCS["Invoice + Bill of Lading + balance<br/>+ issuer signature + Merkle proof<br/>(private)"]
-        HOST["Host / Prover"]
-        GUEST["RISC Zero zkVM<br/>LC-compliance guest"]
-        AUD["Encrypt disclosure<br/>to auditor (X25519)"]
-        TERMS --> HOST
-        DOCS --> HOST
-        HOST --> GUEST
-        HOST --> AUD
-        GUEST --> PROOF["Groth16 seal<br/>+ 80-byte journal"]
+    subgraph OFF["Private — on the seller's machine"]
+        direction TB
+        DOCS["Private trade documents<br/>invoice, shipment, buyer balance…"]
+        ZK["Zero-knowledge machine<br/>checks every rule of the deal"]
+        DOCS --> ZK
+        ZK --> PROOF["Tiny proof<br/>'all rules pass' — reveals nothing"]
     end
 
     PROOF --> ESCROW
 
-    subgraph ON["On-chain (Stellar / Soroban)"]
-        direction LR
-        ESCROW["Escrow contract"]
-        ROUTER["RISC Zero VerifierRouter<br/>(Nethermind)"]
-        SELLER["Seller"]
-        ESCROW -- "verify(seal, image_id, journal_digest)" --> ROUTER
-        ROUTER -- "Ok" --> ESCROW
-        ESCROW -- "transfer release_amount" --> SELLER
-        ESCROW -- "store disclosure_commitment" --> DISC["disclosure() view"]
+    subgraph ON["Public — on Stellar"]
+        direction TB
+        ESCROW["Escrow contract<br/>holds the buyer's money"]
+        VERIFY["Proof verifier"]
+        SELLER["Seller is paid"]
+        ESCROW -- "is this proof valid?" --> VERIFY
+        VERIFY -- "yes" --> ESCROW
+        ESCROW -- "release payment" --> SELLER
     end
 
-    AUD -. "auditor decrypts off-chain,<br/>recompute must equal disclosure()" .-> DISC
-
-    subgraph SIDE["Native Poseidon (standalone, sdk 27)"]
-        POS["poseidon-demo contract<br/>poseidon_permutation receipt"]
-    end
+    ESCROW -. "auditor can reveal chosen details<br/>and prove they match what settled" .-> AUD["Auditor<br/>(holds a view key)"]
 ```
 
 ---
@@ -111,22 +119,20 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A["1. Buyer's bank funds the escrow for LC 1001<br/>(stores terms_digest, image_id, router, seller)"]
-    B["2. Seller presents the private documents + issuer signature + Merkle proof to the host"]
-    C["3. zkVM runs the LC-compliance guest over the documents"]
-    D{"All LC rules pass?"}
-    E["Guest panics. No proof exists. Escrow stays locked."]
-    F["4. Host produces a Groth16 proof and the 80-byte journal,<br/>and encrypts the disclosure to the auditor"]
-    G["5. release(seal, journal) is called on the escrow"]
-    H["6. Escrow computes sha256(journal) and calls VerifierRouter.verify"]
-    I{"Proof valid AND lc_id + terms_digest match this LC?"}
-    J["Transaction reverts. No funds move."]
-    K["7. Escrow transfers release_amount to the seller<br/>and records the disclosure_commitment"]
-    L["8. Later: auditor decrypts the disclosure and confirms<br/>sha256(preimage) equals escrow.disclosure()"]
+    A["Buyer funds the escrow for the trade"]
+    B["Seller's documents are checked privately<br/>in the zero-knowledge machine"]
+    D{"Do the documents meet every rule?"}
+    E["No proof can be produced.<br/>Money stays locked."]
+    F["A tiny proof is produced<br/>(reveals nothing about the documents)"]
+    G["Seller sends the proof to the Stellar contract"]
+    I{"Does the contract verify the proof on-chain?"}
+    J["Rejected. No money moves."]
+    K["Seller is paid. Buyer reclaims any remainder."]
+    L["Later: an auditor reveals chosen details<br/>and proves they match what settled"]
 
-    A --> B --> C --> D
+    A --> B --> D
     D -- No --> E
-    D -- Yes --> F --> G --> H --> I
+    D -- Yes --> F --> G --> I
     I -- No --> J
     I -- Yes --> K --> L
 ```
