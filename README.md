@@ -68,6 +68,22 @@ The proof confirms all the rules below hold over these private values; on-chain,
 
 ---
 
+## The security property (try to break it)
+
+The zero-knowledge proof is the **only** thing that can unlock the money — there is no admin override and no "release" path that skips it. If a document breaks any rule, the proving program panics, so **no proof can be produced**, and the escrow simply stays locked.
+
+Prove it to yourself: feed the prover tampered documents (here, an invoice over the credit limit):
+
+```bash
+cargo run --release --bin host -- sample_data/lc_terms.json sample_data/docs_tampered.json sample_data/approved_sellers.json
+# Guest panicked: invoice amount exceeds LC credit limit
+# -> no seal, no journal, nothing to submit. The escrow can never be released.
+```
+
+Compliant documents are the only way to get a valid seal, and the contract **re-verifies that seal on-chain** before moving a single token. That is what makes the zero-knowledge layer load-bearing rather than decorative.
+
+---
+
 ## Demo
 
 Bill of Zero ships as a keyboard-driven terminal UI (ratatui). Three roles share one on-chain escrow: the **Buyer** funds it and reclaims any remainder, the **Seller** types the private trade documents, generates a real Groth16 proof and releases, and the **Auditor** selectively opens the sealed disclosure and verifies it matches what settled.
@@ -269,6 +285,18 @@ The guest commits a fixed 80-byte journal so the Soroban contract can parse it w
 
 `refund()` lets the buyer reclaim the escrow's remaining balance after release, or cancel and reclaim the full balance once the LC has expired (so the seller keeps a fair presentation window until then).
 
+#### Escrow contract API
+
+| Function | Who calls it | What it does |
+| --- | --- | --- |
+| `init(lc_id, terms_digest, image_id, router, token, seller, buyer, expiry, poseidon)` | deployer | Binds the escrow to one LC. Callable once. |
+| `fund(from, amount)` | buyer | Pulls `amount` of the token into the escrow. |
+| `release(seal, journal)` | seller (with a proof) | Verifies the proof on-chain, pays the seller, stamps the Poseidon receipt. |
+| `refund()` | buyer | Reclaims the remainder after release, or the full balance after expiry. |
+| `is_released() -> bool` | anyone (read) | Whether this LC has settled. |
+| `disclosure() -> Option<BytesN<32>>` | anyone (read) | The selective-disclosure commitment recorded at settlement. |
+| `receipt() -> Option<U256>` | anyone (read) | The native-Poseidon settlement receipt. |
+
 ### Selective disclosure (granular auditor view key)
 
 Disclosure is per-field. Each document field gets its own commitment `c_i = sha256(i || value || blinding_i)`, with `blinding_i` derived from a master blinding, and the journal commits the overall `disclosure_commitment = sha256(c_0 || ... || c_n)`. Off-chain, the host encrypts the field openings to the auditor's X25519 public key (ECDH + ChaCha20-Poly1305). An auditor profile (for example `tax`, `regulator`, or `full`) reveals only the fields it is entitled to and recomputes the overall commitment from the openings; if it equals `escrow.disclosure()`, the disclosed figures are provably exactly what settled, while every other field stays hidden. The chain leaks nothing.
@@ -353,6 +381,16 @@ For fast logic iteration without Docker, prefix with `RISC0_DEV_MODE=1` (this pr
 
 ---
 
+## Built with
+
+- **[RISC Zero zkVM](https://dev.risczero.com)** — runs the Letter-of-Credit compliance program and produces the Groth16 proof.
+- **[Nethermind RISC Zero VerifierRouter for Stellar](https://github.com/NethermindEth/stellar-risc0-verifier)** — the on-chain contract that verifies the proof (the recommended verifier path).
+- **Stellar / Soroban** — smart-contract settlement, using **Protocol 25 (X-Ray)** BN254 pairing checks for proof verification and the native **Poseidon** host function (**CAP-0075**), with **Protocol 26 (Yardstick)** making on-chain verification cheaper.
+- **[ratatui](https://ratatui.rs)** — the terminal UI.
+- ed25519-dalek, SHA-256, X25519 + ChaCha20-Poly1305 — in-guest signature verification and the auditor's selective disclosure.
+
+---
+
 ## References
 
 - RISC Zero zkVM: https://dev.risczero.com
@@ -362,3 +400,13 @@ For fast logic iteration without Docker, prefix with `RISC0_DEV_MODE=1` (this pr
 - CAP-0075 (Poseidon/Poseidon2): https://github.com/stellar/stellar-protocol/blob/master/core/cap-0075.md
 - Stellar RISC Zero verifier writeup: https://stellar.org/blog/developers/risc-zero-verifier
 - Nethermind Stellar RISC Zero verifier: https://github.com/NethermindEth/stellar-risc0-verifier
+
+---
+
+## Team
+
+Built by [FlemingJohn](https://github.com/FlemingJohn) for the **Stellar Hacks: Real-World ZK** hackathon.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
