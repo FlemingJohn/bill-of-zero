@@ -218,6 +218,7 @@ The guest commits a fixed 80-byte journal so the Soroban contract can parse it w
 2. Parses the now-verified journal and checks that the `lc_id` and `terms_digest` match this escrow.
 3. Checks the escrow holds enough to cover `release_amount`, marks the LC released before the external token call (effects-before-interactions, so it is reentrancy-safe), and transfers `release_amount` to the seller.
 4. Records the `disclosure_commitment` so an auditor can later confirm an off-chain disclosure (`disclosure()` view).
+5. Calls the Poseidon contract cross-contract to stamp a native-Poseidon settlement receipt over `(lc_id, release_amount)`, exposed via the `receipt()` view.
 
 `refund()` lets the buyer reclaim the escrow's remaining balance after release, or cancel and reclaim the full balance once the LC has expired (so the seller keeps a fair presentation window until then).
 
@@ -225,11 +226,11 @@ The guest commits a fixed 80-byte journal so the Soroban contract can parse it w
 
 Disclosure is per-field. Each document field gets its own commitment `c_i = sha256(i || value || blinding_i)`, with `blinding_i` derived from a master blinding, and the journal commits the overall `disclosure_commitment = sha256(c_0 || ... || c_n)`. Off-chain, the host encrypts the field openings to the auditor's X25519 public key (ECDH + ChaCha20-Poly1305). An auditor profile (for example `tax`, `regulator`, or `full`) reveals only the fields it is entitled to and recomputes the overall commitment from the openings; if it equals `escrow.disclosure()`, the disclosed figures are provably exactly what settled, while every other field stays hidden. The chain leaks nothing.
 
-### Native Poseidon settlement receipt (standalone)
+### Native Poseidon settlement receipt (integrated via cross-contract call)
 
-`contracts/poseidon-demo/src/lib.rs` demonstrates Stellar's native Poseidon host function (Protocol 25, CAP-0075) running on-chain, via `env.crypto_hazmat().poseidon_permutation(...)` on soroban-sdk 27 with the `hazmat-crypto` feature. It computes a Poseidon commitment over `(lc_id, release_amount)`.
+`contracts/poseidon-demo/src/lib.rs` runs Stellar's native Poseidon host function (Protocol 25, CAP-0075) on-chain via `env.crypto_hazmat().poseidon_permutation(...)` (soroban-sdk 27, `hazmat-crypto`), computing a Poseidon commitment over `(lc_id, release_amount)`.
 
-This is a separate contract on purpose. The Poseidon host function is only exposed by soroban-sdk 27, while the escrow stays on soroban-sdk 25 to remain compatible with the Nethermind RISC Zero verifier client (which pins soroban-sdk 25). Keeping Poseidon separate means the load-bearing on-chain proof verification is never put at risk. Note also that BN254 is already load-bearing in the escrow path: the verifier router uses BN254 pairing checks to verify the Groth16 proof.
+It lives in its own contract because the Poseidon host function is only exposed by soroban-sdk 27, while the escrow stays on soroban-sdk 25 to remain compatible with the Nethermind RISC Zero verifier client. The escrow integrates it **at settlement** with a cross-contract call: inside `release`, after the Groth16 proof verifies and funds transfer, the escrow calls the Poseidon contract to stamp a native-Poseidon settlement receipt and records it (the `receipt()` view). Each contract keeps its own SDK, so native Poseidon runs in the live settlement flow without putting the load-bearing proof verification at risk. BN254 is also load-bearing here: the verifier router uses BN254 pairing checks to verify the Groth16 proof.
 
 ---
 

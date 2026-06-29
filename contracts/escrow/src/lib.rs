@@ -7,7 +7,10 @@
 //! official Nethermind RISC Zero VerifierRouter via a cross-contract call.
 
 use risc0_interface::RiscZeroVerifierRouterClient;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, vec, Address, Bytes, BytesN, Env, IntoVal, Symbol,
+    U256,
+};
 
 /// Journal layout committed by the guest (see bz-core):
 ///   [0..8]   lc_id                 (little-endian u64)
@@ -37,6 +40,9 @@ pub struct Config {
     /// cancel and refund the full balance. Before it, only the seller (via proof)
     /// can move funds.
     pub expiry: u64,
+    /// The standalone native-Poseidon contract. On release the escrow calls it
+    /// to stamp a ZK-friendly settlement receipt over (lc_id, release_amount).
+    pub poseidon: Address,
 }
 
 #[contracttype]
@@ -46,6 +52,8 @@ pub enum DataKey {
     /// The disclosure commitment from the settled proof (feature 5). Lets an
     /// auditor confirm an off-chain disclosure matches what actually settled.
     Disclosure,
+    /// The native-Poseidon settlement receipt computed on release (feature 2).
+    Receipt,
 }
 
 #[contract]
@@ -64,6 +72,7 @@ impl EscrowContract {
         seller: Address,
         buyer: Address,
         expiry: u64,
+        poseidon: Address,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             panic!("already initialized");
@@ -77,6 +86,7 @@ impl EscrowContract {
             seller,
             buyer,
             expiry,
+            poseidon,
         };
         env.storage().instance().set(&DataKey::Config, &cfg);
         env.storage().instance().set(&DataKey::Released, &false);
@@ -161,6 +171,20 @@ impl EscrowContract {
             &cfg.seller,
             &(release_amount as i128),
         );
+
+        // 7. Stamp a native-Poseidon settlement receipt (feature 2) by calling
+        //    the standalone Poseidon contract cross-contract, and record it.
+        //    This puts Stellar's native Poseidon host function in the live
+        //    settlement path without the SDK-version conflict (each contract
+        //    keeps its own soroban-sdk).
+        let receipt: U256 = env.invoke_contract(
+            &cfg.poseidon,
+            &Symbol::new(&env, "commit"),
+            vec![&env, lc_id.into_val(&env), release_amount.into_val(&env)],
+        );
+        env.storage().instance().set(&DataKey::Receipt, &receipt);
+        env.events()
+            .publish((Symbol::new(&env, "poseidon_receipt"),), receipt);
     }
 
     /// Refund the escrow's remaining balance to the buyer.
@@ -190,6 +214,11 @@ impl EscrowContract {
     /// View: the disclosure commitment of the settled proof (feature 5), if any.
     pub fn disclosure(env: Env) -> Option<BytesN<32>> {
         env.storage().instance().get(&DataKey::Disclosure)
+    }
+
+    /// View: the native-Poseidon settlement receipt (feature 2), if released.
+    pub fn receipt(env: Env) -> Option<U256> {
+        env.storage().instance().get(&DataKey::Receipt)
     }
 
     /// View: has this escrow been released?

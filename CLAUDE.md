@@ -18,7 +18,7 @@ The demo UI is a **terminal app (ratatui)** — there is no web frontend.
 | `host/` | `host` | Prover CLI (+ auditor). Reads JSON inputs, builds Merkle witnesses, signs as issuer, produces the Groth16 seal + 80-byte journal, encrypts the auditor disclosure. |
 | `tui/` | `bz-tui` | The terminal UI. Orchestrates `host` (prove/audit) and the `stellar` CLI (fund/release/refund). Run this for the demo. |
 | `contracts/escrow/` | escrow | Soroban escrow: `fund`, `release(seal, journal)` (calls the verifier router), `refund`, `disclosure`, `is_released`. |
-| `contracts/poseidon-demo/` | demo | Standalone native-Poseidon receipt demo (separate SDK version; escrow untouched). |
+| `contracts/poseidon-demo/` | demo | Native-Poseidon receipt contract (soroban-sdk 27). The escrow calls it cross-contract on `release` to stamp a settlement receipt (`receipt()`). |
 | `deployment.json` | — | Live testnet addresses + `imageId`/`termsDigest`. The TUI reads this. |
 | `sample_data/` | — | LC terms + allowlists (bank config) + sample docs. The TUI generates `.tui_docs.json` from typed input. |
 
